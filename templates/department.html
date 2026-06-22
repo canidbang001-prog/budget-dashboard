@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}{{ dept_name }} — 예산 상세{% endblock %}
+
+{% block content %}
+<div class="department-page">
+    <a href="/" class="back-link">← 대시보드로</a>
+    <h1>📁 {{ dept_name }}</h1>
+    <div class="tree-container" id="treeContainer">
+        <div class="loading">불러오는 중...</div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const deptName = '{{ dept_name }}';
+
+function fmt(n) {
+    if (n === 0) return '0';
+    return (n / 1000).toLocaleString('ko-KR');
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+let expandedNodes = new Set();
+let allNodes = [];
+
+async function loadDeptTree() {
+    const res = await fetch(`/api/tree?dept=${encodeURIComponent(deptName)}&limit=3000`);
+    allNodes = await res.json();
+    renderTree();
+}
+
+function renderTree() {
+    const container = document.getElementById('treeContainer');
+    if (!allNodes.length) {
+        container.innerHTML = '<div class="empty">데이터가 없습니다.</div>';
+        return;
+    }
+    
+    const nodeMap = {};
+    allNodes.forEach(n => {
+        nodeMap[n.id] = n;
+        n._children = [];
+    });
+    
+    allNodes.forEach(n => {
+        if (n.parent_id && nodeMap[n.parent_id]) {
+            nodeMap[n.parent_id]._children.push(n);
+        }
+    });
+    
+    const roots = allNodes.filter(n => n.depth === 1 && n.dept === deptName);
+    if (roots.length === 0) {
+        // fallback
+        const root = allNodes.find(n => n.depth === 0 && n.is_total);
+        if (root) roots.push(root);
+    }
+    
+    container.innerHTML = roots.map(r => renderNode(r, nodeMap, 0)).join('');
+}
+
+function renderNode(node, nodeMap, level) {
+    const hasChildren = node._children && node._children.length > 0;
+    const isExpanded = expandedNodes.has(node.id);
+    
+    let name = '';
+    if (node.calc_name) name = node.calc_name;
+    else if (node.item_name) name = `[${node.item_code || ''}] ${node.item_name}`;
+    else if (node.detail) name = node.detail;
+    else if (node.unit) name = node.unit;
+    else if (node.policy) name = node.policy;
+    
+    const indent = level * 20;
+    
+    let financeHTML = '';
+    if (node.finance_national > 0 || node.finance_province > 0 || node.finance_county > 0 || node.finance_other > 0) {
+        const parts = [];
+        if (node.finance_national > 0) parts.push('<span class="fin-tag nat">국 ' + fmt(node.finance_national) + '</span>');
+        if (node.finance_province > 0) parts.push('<span class="fin-tag prov">도 ' + fmt(node.finance_province) + '</span>');
+        if (node.finance_county > 0) parts.push('<span class="fin-tag cnty">군 ' + fmt(node.finance_county) + '</span>');
+        if (node.finance_other > 0) parts.push('<span class="fin-tag other">기 ' + fmt(node.finance_other) + '</span>');
+        financeHTML = '<div class="tree-finance">' + parts.join(' ') + '</div>';
+    }
+    
+    let childrenHTML = '';
+    if (hasChildren && isExpanded) {
+        childrenHTML = node._children
+            .filter(c => !c.is_finance)
+            .map(c => renderNode(c, nodeMap, level + 1))
+            .join('');
+    }
+    
+    const expandIcon = hasChildren 
+        ? `<span class="tree-toggle ${isExpanded ? 'expanded' : ''}" onclick="toggleNode(event, ${node.id})">${isExpanded ? '▼' : '▶'}</span>`
+        : '<span class="tree-toggle leaf"></span>';
+    
+    return `
+    <div class="tree-node" data-node-id="${node.id}">
+        <div class="tree-row" style="padding-left:${indent}px" onclick="handleClick(event, ${node.id}, ${hasChildren})">
+            ${expandIcon}
+            <span class="tree-name">${escapeHtml(name)}</span>
+            <span class="tree-amount ${node.is_total ? 'total' : ''}">${fmt(node.budget_amount)}천원</span>
+        </div>
+        ${financeHTML}
+        <div class="tree-children ${isExpanded ? 'expanded' : ''}" id="children-${node.id}">
+            ${childrenHTML}
+        </div>
+    </div>`;
+}
+
+function toggleNode(event, nodeId) {
+    event.stopPropagation();
+    if (expandedNodes.has(nodeId)) {
+        expandedNodes.delete(nodeId);
+    } else {
+        expandedNodes.add(nodeId);
+    }
+    renderTree();
+}
+
+function handleClick(event, nodeId, hasChildren) {
+    if (hasChildren) toggleNode(event, nodeId);
+}
+
+loadDeptTree();
+</script>
+{% endblock %}

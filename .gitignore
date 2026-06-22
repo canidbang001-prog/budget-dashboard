@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# SQLite WAL/Shm
+*.db-shm
+*.db-wal
+
+# Database backups
+budget.db.backup_*
+budget.db.before_full_rebuild
+budget_backup_*.db
+budget_v*.db
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+{templates,static}

@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}검색 — 홍성군 예산서{% endblock %}
+
+{% block content %}
+<div class="search-page">
+    <h1>🔍 예산 검색</h1>
+    <div class="search-box-lg">
+        <input type="text" id="searchInput" placeholder="부서명, 사업명, 편성목 등 검색..." value="{{ query }}" 
+               onkeydown="if(event.key==='Enter') doSearch()">
+        <button onclick="doSearch()">검색</button>
+    </div>
+    
+    <div class="search-results" id="searchResults">
+        {% if query %}
+        <div class="loading">검색 중...</div>
+        {% else %}
+        <div class="empty">검색어를 입력하세요.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function fmt(n) {
+    if (n === 0) return '0';
+    return (n / 1000).toLocaleString('ko-KR');
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function doSearch() {
+    const q = document.getElementById('searchInput').value.trim();
+    if (!q) return;
+    
+    const container = document.getElementById('searchResults');
+    container.innerHTML = '<div class="loading">검색 중...</div>';
+    
+    // URL 업데이트
+    history.pushState(null, '', '/search?q=' + encodeURIComponent(q));
+    
+    const res = await fetch('/api/search?q=' + encodeURIComponent(q));
+    const results = await res.json();
+    
+    if (results.length === 0) {
+        container.innerHTML = '<div class="empty">검색 결과가 없습니다.</div>';
+        return;
+    }
+    
+    container.innerHTML = `
+        <div class="search-count">${results.length}건 검색됨</div>
+        <table class="search-table">
+            <thead>
+                <tr>
+                    <th>부서</th>
+                    <th>사업명/내역</th>
+                    <th>예산액</th>
+                    <th>페이지</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${results.map(r => `
+                <tr>
+                    <td><a href="/department/${encodeURIComponent(r.dept)}">${escapeHtml(r.dept)}</a></td>
+                    <td>
+                        <div class="search-hierarchy">
+                            ${r.policy ? '<span>' + escapeHtml(r.policy) + '</span>' : ''}
+                            ${r.unit ? '<span class="sep">▸</span> <span>' + escapeHtml(r.unit) + '</span>' : ''}
+                            ${r.detail ? '<span class="sep">▸</span> <span>' + escapeHtml(r.detail) + '</span>' : ''}
+                            ${r.item_name ? '<span class="sep">▸</span> <span>' + escapeHtml(r.item_name) + '</span>' : ''}
+                            ${r.calc_name ? '<span class="sep">▸</span> <span class="highlight">' + escapeHtml(r.calc_name) + '</span>' : ''}
+                        </div>
+                    </td>
+                    <td class="amount">${fmt(r.budget_amount)}천원</td>
+                    <td>${r.page}페이지</td>
+                </tr>`).join('')}
+            </tbody>
+        </table>`;
+}
+
+// 초기 검색어가 있으면 자동 검색
+{% if query %}
+doSearch();
+{% endif %}
+</script>
+{% endblock %}
