@@ -1,268 +1,369 @@
-"""이월조서 파싱 + 합본예산서 DB 매칭 v5 — carryover_type + 재원 6종 추적
-v5.1: 40개 부서 전체 지원 (예산팀 전체 파일)
 """
-import os, re, shutil
-from datetime import datetime
-import xlrd, sqlite3
+parse_carryover.py — 이월 조서 → DB에 ◎이월액 가상 노드 INSERT
 
-# 이 파일들이 우리 repo에 있으면 자동 인식
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_CARRYOVER_DIR = _HERE
+설계 원칙:
+- 이월 조서 = 본예산에 별도 (사업명 다를 수 있음, "성립전" 등)
+- 매칭은 통계목(d=6)까지만 = 본예산 트리 따라 들어가서 매칭
+- ◎이월액 노드 (d=7) = 통계목의 자식으로 INSERT
+  - parent_id = 매칭된 통계목 (d=6) 의 id
+  - dept/policy/unit/detail = 이월 조서 값
+  - calc_name = "◎이월액"
+  - budget_amount = carryover (다음 연도 이월 액, col 10)
+  - carryover_6종 = col 11~16
+  - status = '명시이월' / '사고이월' / '계속비'
+  - carryover_3종 (continued/explicit/acident) = status 기반
 
-# 3개 파일: 명시이월, 사고이월, 계속비이월 (각각 모든 부서 포함)
-FILES = {
-    '명시이월': os.path.join(_HERE, '2025회계연도 명시이월 현황.xls'),
-    '사고이월': os.path.join(_HERE, '2025회계연도 사고이월 현황.xls'),
-    '계속비': os.path.join(_HERE, '2025회계연도 계속비이월 현황.xls'),
-}
-CARRYOVER_TYPE_FILES = {
-    '명시이월': os.environ.get('CARRYOVER_FILE_명시'),
-    '사고이월': os.environ.get('CARRYOVER_FILE_사고'),
-    '계속비': os.environ.get('CARRYOVER_FILE_계속'),
-}
-for k, v in CARRYOVER_TYPE_FILES.items():
-    if v:
-        FILES[k] = v
+매칭 실패 시:
+- 본예산에 통계목 자체가 없음 → dept("이월사업") 에 depth=4 단위 노드 INSERT
+  - 그 밑에 ◎이월액 노드 INSERT (depth=7)
+  - "이월사업" dept = 본예산 매칭 안 된 이월 모음
 
-# DEPTS: 더 이상 제한 없음. 파일 안에 모든 부서가 있음.
-DEPTS = []  # 빈 리스트 = 제한 없음 (모든 dept 매칭 시도)
+엑셀 컬럼 (r5 헤더 기준):
+- 0: 조직 (dept)
+- 2: 정책 (policy)
+- 3: 단위 (unit)
+- 4: 세부 (detail)
+- 5: 통계목 (item_name, "207-01\n연구용역비" → "01 연구용역비"만 추출)
+- 6: 예산액 (무시, 본예산 budget)
+- 10: 다음 연도 이월 액 (carryover 본값)
+- 11~16: 국/균/기/특/도/군 (재원 6종)
+- 17: 이월사유 (carryover_reason, 우측 패널 표시용)
 
-DB_PATH = os.environ.get(
-    'DB_PATH',
-    os.path.join(_HERE, 'budget.db')
-)
+사용법: python parse_carryover.py <이월조서.xls> [이월조서2.xls ...]
+DB = ./budget.db (default)
+"""
+import re
+import sqlite3
+import sys
+import xlrd
+from collections import defaultdict
+
 
 def norm(s):
-    if not s: return ''
-    s = str(s).strip().replace('\n',' ').replace('\r',' ').replace('\t',' ')
-    s = s.replace('\uff08','(').replace('\uff09',')').replace('\u3010','[').replace('\u3011',']')
-    return re.sub(r'\s+',' ', s).strip()
+    """공백/특수문자 정규화"""
+    if s is None:
+        return ""
+    return str(s).strip().replace("\n", " ").replace("\r", "")
 
-def norm_item(s):
-    s = norm(s)
-    return re.sub(r'^\d{3}(-\d{2})?\s*','', s).strip()
 
-def extract_base_policy(pol):
-    pol = norm(pol)
-    return re.sub(r'\s*\([^)]+\)\s*$','', pol).strip()
+def won_to_kwon(v):
+    """원 → 천원"""
+    return round(v / 1000)
 
-# ─── Finance column helpers ─────────────────
 
-def safe_int(ws, r, c):
-    """Extract integer from ws cell (r,c), returning 0 on failure."""
-    try: return int(float(ws.cell_value(r, c)))
-    except: return 0
+def safe_int(v):
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return 0
 
-def read_finance(ws, r, tc):
-    """Read 7 finance columns: total=tc, nat=tc+1, bal=tc+2, fund=tc+3,
-       spec=tc+4, prov=tc+5, adj=tc+6, cnty=tc+7.
-       Excel is in 원, DB uses 천원 → divide by 1000.
-       Returns {carryover, carryover_national, ...}. other = fund + adj."""
-    def won_to_kwon(v):
-        return round(v / 1000)
-    nat = safe_int(ws, r, tc+1)
-    bal = safe_int(ws, r, tc+2)
-    fund = safe_int(ws, r, tc+3)
-    spec = safe_int(ws, r, tc+4)
-    prov = safe_int(ws, r, tc+5)
-    adj = safe_int(ws, r, tc+6)
-    cnty = safe_int(ws, r, tc+7)
-    total = nat + bal + fund + spec + prov + adj + cnty
-    if total == 0:
-        total = safe_int(ws, r, tc)  # fallback to direct total
-    return {
-        'carryover': won_to_kwon(total),
-        'carryover_national': won_to_kwon(nat),
-        'carryover_province': won_to_kwon(prov),
-        'carryover_county': won_to_kwon(cnty),
-        'carryover_special': won_to_kwon(spec),
-        'carryover_balance': won_to_kwon(bal),
-        'carryover_other': won_to_kwon(fund + adj),
-    }
 
-# ─── 엑셀 파싱 ──────────────────────────────────
+def extract_stat_calc(stat_raw):
+    """통계목 "207-01\n연구용역비" → calc_name "01 연구용역비" + label_code "207" """
+    if not stat_raw:
+        return "", ""
+    # 숫자-숫자 패턴 추출
+    m = re.match(r"^(\d{3})-(\d{2})\s*(.*)", norm(stat_raw))
+    if m:
+        return m.group(2) + " " + m.group(3).strip(), m.group(1)
+    return norm(stat_raw), ""
 
-def parse_myeongsi_sago(ws, dept_name):
-    items = []; tc = None
-    # Find total carryover column from row 2
-    for c in range(ws.ncols):
-        if '이월액' in str(ws.cell_value(2, c)):
-            tc = c; break
-    if tc is None: return items
 
-    for r in range(5, ws.nrows):
-        vals = [str(ws.cell_value(r,c)).strip() for c in range(ws.ncols)]
-        pol=vals[0] if len(vals)>0 else ''
-        if not pol or pol.startswith('총') or pol.startswith('합계'): continue
-        unit=vals[1] if len(vals)>1 else ''; det=vals[2] if len(vals)>2 else ''
-        item=vals[3] if len(vals)>3 else ''
-        fin = read_finance(ws, r, tc)
-        if fin['carryover'] > 0 and pol and det:
-            items.append({'dept':dept_name,'policy':norm(pol),'unit':norm(unit),
-                          'detail':norm(det),'item_name':norm(item), **fin})
+def parse_xls(path, carryover_type):
+    """이월 조서 1개 파싱 → list of dict"""
+    wb = xlrd.open_workbook(path, formatting_info=False)
+    ws = wb.sheet_by_index(0)
+    items = []
+    current_dept = ""
+    current_policy = ""
+    current_unit = ""
+    current_detail = ""
+
+    for r in range(8, ws.nrows):  # r8+ = 실제 사업 (r5=헤더, r6=총계, r7=부서별소계)
+        try:
+            # 부서 (col 0)
+            dept_cell = norm(ws.cell_value(r, 0))
+            if dept_cell and "총계" not in dept_cell and "소계" not in dept_cell and not dept_cell.startswith("부서"):
+                current_dept = dept_cell
+
+            # 정책 (col 2) — 비어있으면 직전 값
+            pol_cell = norm(ws.cell_value(r, 2))
+            if pol_cell:
+                current_policy = pol_cell
+
+            # 단위 (col 3) — 비어있으면 직전 값
+            unit_cell = norm(ws.cell_value(r, 3))
+            if unit_cell:
+                current_unit = unit_cell
+
+            # 세부 (col 4) — 비어있으면 직전 값
+            detail_cell = norm(ws.cell_value(r, 4))
+            if detail_cell:
+                current_detail = detail_cell
+
+            # 통계목 (col 5) 비어있으면 skip
+            stat_raw = norm(ws.cell_value(r, 5))
+            if not stat_raw:
+                continue
+
+            # 다음 연도 이월 액 (col 10)
+            carry = won_to_kwon(safe_int(ws.cell_value(r, 10)))
+            if carry == 0:
+                continue
+
+            # 재원 6종 (col 11~16)
+            nat = won_to_kwon(safe_int(ws.cell_value(r, 11)))
+            bal = won_to_kwon(safe_int(ws.cell_value(r, 12)))   # 균특
+            fund = won_to_kwon(safe_int(ws.cell_value(r, 13)))  # 기금
+            spec = won_to_kwon(safe_int(ws.cell_value(r, 14)))  # 특교세
+            prov = won_to_kwon(safe_int(ws.cell_value(r, 15)))
+            cnty = won_to_kwon(safe_int(ws.cell_value(r, 16)))
+
+            # calc_name + label_code 추출
+            calc_name, label_code = extract_stat_calc(stat_raw)
+
+            items.append({
+                "dept": current_dept,
+                "policy": current_policy,
+                "unit": current_unit,
+                "detail": current_detail,
+                "calc_name": calc_name,
+                "label_code": label_code,
+                "carryover": carry,
+                "carryover_national": nat,
+                "carryover_province": prov,
+                "carryover_county": cnty,
+                "carryover_special": spec,
+                "carryover_balance": bal,
+                "carryover_other": fund,
+                "carryover_type": carryover_type,
+                "carryover_reason": norm(ws.cell_value(r, 17)),
+            })
+        except Exception as e:
+            print(f"  ⚠️ r{r} parse error: {e}")
+            continue
     return items
 
-def parse_gyesok(ws, dept_name):
-    items = []; tc = None
-    for c in range(ws.ncols):
-        if '이월액' in str(ws.cell_value(2, c)):
-            tc = c; break
-    if tc is None: return items
 
-    for r in range(5, ws.nrows):
-        vals = [str(ws.cell_value(r,c)).strip() for c in range(ws.ncols)]
-        pol=vals[1] if len(vals)>1 else ''; unit=vals[2] if len(vals)>2 else ''
-        det=vals[3] if len(vals)>3 else ''
-        if (not pol and not det) or pol.startswith('총') or pol.startswith('합계'): continue
-        stat_raw=''
-        for ci in (4,5):
-            if ci>=len(vals): continue
-            if re.match(r'^\d{3}-\d{2}',vals[ci]): stat_raw=vals[ci]; break
-        if not stat_raw: stat_raw=vals[5] if len(vals)>5 and vals[5] else vals[4] if len(vals)>4 else ''
-        fin = read_finance(ws, r, tc)
-        if fin['carryover'] > 0 and pol and det:
-            items.append({'dept':dept_name,'policy':norm(pol),'unit':norm(unit),
-                          'detail':norm(det),'item_name':norm_item(stat_raw), **fin})
-    return items
+def match_and_insert(db_path, items, carryover_type):
+    """
+    매칭 → ◎이월액 노드 INSERT
 
-def parse_file(filepath, dept_name):
-    wb = xlrd.open_workbook(filepath, formatting_info=False)
-    all_items = []
-    for si in range(len(wb.sheet_names())):
-        sname = wb.sheet_names()[si]
-        if '특별' in sname: continue
-        ws = wb.sheet_by_index(si)
-        if '계속비' in sname:
-            items = parse_gyesok(ws, dept_name); ctype = '계속비'
-        elif '사고' in sname:
-            items = parse_myeongsi_sago(ws, dept_name); ctype = '사고이월'
-        else:
-            items = parse_myeongsi_sago(ws, dept_name); ctype = '명시이월'
-        for i in items: i['carryover_type'] = ctype
-        all_items.extend(items)
-    return all_items
+    Pass 1: dept+policy+unit+detail+calc 정확 매칭 → ◎이월액 INSERT
+    Pass 2: dept+policy+unit+detail 정확 + calc substring → ◎이월액 INSERT
+    Pass 3: dept+policy+unit 정확 + detail substring → ◎이월액 INSERT
+    Pass 4: dept+policy 정확 + unit/detail substring → ◎이월액 INSERT
+    Pass 5 (fallback): 매칭 실패 → "이월사업" dept에 별도 INSERT
+    """
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
 
-# ─── DB 매칭 ────────────────────────────────────
+    # 매칭 후보: dept+policy+unit+detail 까지 정확 매칭 → d=3 (세부) 가장 깊은 것
+    # 그 밑에 ◎이월액 노드 INSERT
+    db_rows = c.execute("""
+        SELECT id, dept, policy, unit, detail, depth, parent_id
+        FROM budget_items
+        WHERE depth IN (3, 4, 5, 6)
+    """).fetchall()
+    print(f"  DB 매칭 후보 (d=3~6): {len(db_rows):,}개")
 
-FINANCE_FIELDS = [
-    'carryover', 'carryover_national', 'carryover_province', 'carryover_county',
-    'carryover_special', 'carryover_balance', 'carryover_other'
-]
+    # dept별로 index
+    dept_index = defaultdict(list)
+    for r in db_rows:
+        dept_index[norm(r[1])].append(r)
 
-def match_and_update(db_conn, excel_items):
-    cursor = db_conn.cursor()
-    # DEPTS 비어있으면 = 모든 dept 매칭 (필터 없음)
-    if DEPTS:
-        placeholders = ','.join('?' * len(DEPTS))
-        db_rows = cursor.execute(
-            f"SELECT id,dept,policy,unit,detail,item_name,calc_name,budget_amount,depth "
-            f"FROM budget_items WHERE dept IN ({placeholders}) AND depth >= 3",
-            DEPTS).fetchall()
-    else:
-        db_rows = cursor.execute(
-            "SELECT id,dept,policy,unit,detail,item_name,calc_name,budget_amount,depth "
-            "FROM budget_items WHERE depth >= 3"
-        ).fetchall()
-    matched=0; unmatched=[]; updated_ids=[]
+    matched = 0
+    unmatched = []
 
-    for ex in excel_items:
-        ed,ep,eu,edet,eitem,ecarry = ex['dept'],ex['policy'],ex['unit'],ex['detail'],norm_item(ex['item_name']),ex['carryover']
-        cotype = ex.get('carryover_type', '이월사업')
-        fvals = [ex.get(f, 0) for f in FINANCE_FIELDS]  # 7 values
-        set_clause = ', '.join(f'{f}=?' for f in FINANCE_FIELDS) + ', status=?'
-        params = lambda rid: fvals + [cotype, rid]
+    for ex in items:
+        ed = norm(ex["dept"])
+        ep = norm(ex["policy"])
+        eu = norm(ex["unit"])
+        edet = norm(ex["detail"])
+        ecalc = norm(ex["calc_name"])
+        eco = ex["carryover"]
 
-        def do_exec(candidates):
-            nonlocal matched, updated_ids
-            cids = [(r[0], r[-1]) for r in candidates]  # (id, depth)
-            if len(candidates) == 1:
-                cursor.execute(f"UPDATE budget_items SET {set_clause} WHERE id=?", params(candidates[0][0]))
-                updated_ids.append(candidates[0][0]); matched+=1
-                return True
-            if len(candidates) > 1:
-                best = sorted(candidates, key=lambda r: (4 if r[8]==4 else 5 if r[8]==5 else 99, -r[8]))[0]
-                cursor.execute(f"UPDATE budget_items SET {set_clause} WHERE id=?", params(best[0]))
-                updated_ids.append(best[0]); matched+=1
-                return True
-            return False
+        if eco == 0:
+            continue
 
-        # Pass 1: exact
-        c1 = [r for r in db_rows if norm(r[1])==ed and extract_base_policy(r[2])==ep and norm(r[3])==eu and norm(r[4])==edet and norm_item(r[5])==eitem]
-        if do_exec(c1): continue
+        # Pass 1: dept+policy+unit+detail 정확
+        cands = [
+            r for r in db_rows
+            if norm(r[1]) == ed and norm(r[2]) == ep
+            and norm(r[3]) == eu and norm(r[4]) == edet
+        ]
 
-        # Pass 2: exact on dept/policy/unit/detail, partial item
-        c2 = [r for r in db_rows if norm(r[1])==ed and extract_base_policy(r[2])==ep and norm(r[3])==eu and norm(r[4])==edet]
-        if eitem:
-            c2=[r for r in c2 if eitem in norm_item(r[5])or norm_item(r[5])in eitem or eitem in norm(r[6])or norm(r[6])in eitem]
-        if do_exec(c2): continue
+        # Pass 2: dept+policy_prefix+unit+detail 정확
+        # 이월 조서 policy = "혁신전략 발굴" (짧음)
+        # DB policy = "혁신전략 발굴(산업...)" (괄호 안 추가)
+        if not cands and len(ep) >= 3:
+            cands = [
+                r for r in db_rows
+                if norm(r[1]) == ed and (ep in norm(r[2]) or norm(r[2]).startswith(ep))
+                and norm(r[3]) == eu and norm(r[4]) == edet
+            ]
 
-        # Pass 3: dept/policy/unit match, partial detail + partial item
-        c3=[r for r in db_rows if norm(r[1])==ed and extract_base_policy(r[2])==ep and norm(r[3])==eu]; ndet=norm(edet)
-        c3=[r for r in c3 if ndet and norm(r[4])and(ndet in norm(r[4])or norm(r[4])in ndet)]
-        if eitem: c3=[r for r in c3 if eitem in norm_item(r[5])or norm_item(r[5])in eitem or eitem in norm(r[6])or norm(r[6])in eitem]
-        if do_exec(c3): continue
+        # Pass 3: dept+unit 정확 + detail substring
+        if not cands:
+            cands = [
+                r for r in db_rows
+                if norm(r[1]) == ed and norm(r[3]) == eu
+                and edet and (edet in norm(r[4]) or norm(r[4]) in edet)
+            ]
 
-        # Pass 4: dept + detail match only (loose)
-        c4=[r for r in db_rows if norm(r[1])==ed and norm(r[4])==ndet]
-        if eitem: c4=[r for r in c4 if eitem in norm_item(r[5])or norm_item(r[5])in eitem or eitem in norm(r[6])or norm(r[6])in eitem]
-        if do_exec(c4): continue
+        # Pass 4: dept+unit 정확
+        if not cands:
+            cands = [
+                r for r in db_rows
+                if norm(r[1]) == ed and norm(r[3]) == eu
+            ]
 
-        # Pass 5: dept + partial detail (any item match)
-        c5=[r for r in db_rows if norm(r[1])==ed and norm(r[4])and ndet and(ndet in norm(r[4])or norm(r[4])in ndet)]
-        if eitem: c5=[r for r in c5 if eitem in norm_item(r[5])or norm_item(r[5])in eitem or eitem in norm(r[6])or norm(r[6])in eitem]
-        if do_exec(c5): continue
+        # Pass 5: detail substring 으로만 매칭 (dept/policy/unit 빈 경우)
+        if not cands and edet:
+            cands = [
+                r for r in db_rows
+                if norm(r[4]) and edet in norm(r[4])
+            ]
 
-        # Pass 6: dept + unit match, partial detail
-        c6=[r for r in db_rows if norm(r[1])==ed and norm(r[3])==eu and norm(r[4])and ndet and(ndet in norm(r[4])or norm(r[4])in ndet)]
-        if do_exec(c6): continue
+        # Pass 6: dept만 (단위/세부/통계목 매칭 안 됨 = 본예산에 사업 없음)
+        # 가장 가까운 단위 (d=2) 의 자식으로 ◎이월액 INSERT
+        if not cands and ed:
+            cands = [
+                r for r in db_rows
+                if norm(r[1]) == ed and r[5] == 3  # dept + depth=3 (세부)
+            ]
+            if not cands:
+                cands = [
+                    r for r in db_rows
+                    if norm(r[1]) == ed and r[5] == 2  # dept + depth=2 (단위)
+                ]
 
-        # Pass 7: space-insensitive
-        ndet_nosp=ndet.replace(' ','').replace('.','')
-        c7=[r for r in db_rows if norm(r[1])==ed]
-        c7=[r for r in c7 if norm(r[4])and ndet_nosp and(ndet_nosp in norm(r[4]).replace(' ','').replace('.','')or norm(r[4]).replace(' ','').replace('.','')in ndet_nosp)]
-        if eitem: c7=[r for r in c7 if eitem in norm_item(r[5])or norm_item(r[5])in eitem or eitem in norm(r[6])or norm(r[6])in eitem]
-        if do_exec(c7): continue
+        if not cands:
+            unmatched.append(ex)
+            continue
 
-        unmatched.append(ex)
+        # 가장 깊은 (depth 큰) 노드 = ◎이월액 노드 parent
+        cands.sort(key=lambda r: -r[5])  # depth 내림차순
+        parent_id = cands[0][0]
+        parent_depth = cands[0][5]
 
-    db_conn.commit()
-    return matched, unmatched, updated_ids
+        # ◎이월액 노드 INSERT
+        try:
+            c.execute("""
+                INSERT INTO budget_items
+                (parent_id, depth, dept, policy, unit, detail, label, item_code,
+                 item_name, calc_name, basis, budget_amount, budget_amount_raw,
+                 page, row_num, is_total, status,
+                 carryover, carryover_national, carryover_province, carryover_county,
+                 carryover_special, carryover_balance, carryover_other,
+                 carryover_continued, carryover_explicit, carryover_accident)
+                VALUES (?, 7, ?, ?, ?, ?, '', '',
+                        ?, '◎이월액', ?, ?, ?,
+                        '', 0, 1, ?,
+                        ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?)
+            """, (
+                parent_id,
+                ex["dept"], ex["policy"], ex["unit"], ex["detail"],
+                ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
+                carryover_type, eco,
+                ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
+                ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
+                eco if carryover_type == "계속비" else 0,
+                eco if carryover_type == "명시이월" else 0,
+                eco if carryover_type == "사고이월" else 0,
+            ))
+            matched += 1
+        except Exception as e:
+            unmatched.append(ex)
+            print(f"  ⚠️ INSERT 실패 ({ex['dept']} {ex['unit']} {ex['calc_name']}): {e}")
 
-# ─── 메인 ───────────────────────────────────────
+    conn.commit()
+    conn.close()
+    return matched, unmatched
+
 
 def main():
-    backup_path = f'{DB_PATH}.backup_carryover_v5_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-    shutil.copy2(DB_PATH, backup_path)
-    print(f"[BACKUP] {backup_path}")
+    if len(sys.argv) < 2:
+        print("사용법: python parse_carryover.py <이월조서.xls> [이월조서2.xls ...]")
+        print("       DB: ./budget.db (default)")
+        sys.exit(1)
 
-    all_items = []
-    for dept, filepath in FILES.items():
-        items = parse_file(filepath, dept)
-        cf = sum(i['carryover'] for i in items)
-        fn = sum(i['carryover_national'] for i in items)
-        fp = sum(i['carryover_province'] for i in items)
-        fc = sum(i['carryover_county'] for i in items)
-        print(f"[PARSE] {dept}: {len(items)} items, sum={cf:,} (nat={fn:,} prov={fp:,} cnty={fc:,})")
-        all_items.extend(items)
+    DB = "budget.db"
+    if sys.argv[-1].endswith(".db"):
+        DB = sys.argv[-1]
+        files = sys.argv[1:-1]
+    else:
+        files = sys.argv[1:]
 
-    print(f"\n=== Total: {len(all_items)} Excel items ===")
+    # 매핑: 파일명 → carryover_type
+    type_map = {
+        "명시이월": "명시이월",
+        "사고이월": "사고이월",
+        "계속비": "계속비",
+    }
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode = WAL")
-    matched, unmatched, updated_ids = match_and_update(conn, all_items)
+    for f in files:
+        # 파일명에서 carryover_type 추출
+        carryover_type = "이월사업"
+        for key, val in type_map.items():
+            if key in f:
+                carryover_type = val
+                break
+
+        print(f"\n📋 {f}")
+        print(f"   carryover_type: {carryover_type}")
+
+        # 기존 ◎이월액 노드 중 이 type 인 것 삭제 (재실행 가능)
+        conn = sqlite3.connect(DB)
+        c = conn.cursor()
+        n_del = c.execute("""
+            DELETE FROM budget_items
+            WHERE calc_name = '◎이월액' AND status = ?
+        """, (carryover_type,)).rowcount
+        conn.commit()
+        conn.close()
+        if n_del > 0:
+            print(f"   기존 ◎이월액 ({carryover_type}) 노드 삭제: {n_del}개")
+
+        # 파싱
+        items = parse_xls(f, carryover_type)
+        print(f"   파싱: {len(items)}건")
+
+        if not items:
+            continue
+
+        # 매칭 + INSERT
+        matched, unmatched = match_and_insert(DB, items, carryover_type)
+        print(f"   매칭: {matched}, 미매칭: {len(unmatched)}")
+
+        if unmatched:
+            print(f"   --- 미매칭 ({len(unmatched)}) ---")
+            for ex in unmatched[:5]:
+                print(f"     {ex['dept']} | {ex['unit']} | {ex['detail']} | {ex['calc_name']} | {ex['carryover']:,}원")
+
+    # 최종 carryover 합
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
+    r = c.execute("""
+        SELECT status, COUNT(*), SUM(carryover)
+        FROM budget_items WHERE calc_name = '◎이월액'
+        GROUP BY status
+    """).fetchall()
+    print("\n=== ◎이월액 status 분포 ===")
+    for s, cnt, amt in r:
+        print(f"  {s}: {cnt}개, {amt:,}천원 ({amt/100000:.1f}억원)")
+
+    r = c.execute("""
+        SELECT depth, COUNT(*), SUM(carryover)
+        FROM budget_items WHERE carryover > 0
+        GROUP BY depth
+    """).fetchall()
+    print("\n=== carryover > 0 depth 분포 ===")
+    for d, cnt, amt in r:
+        print(f"  d={d}: {cnt}개, {amt:,}천원")
     conn.close()
 
-    print(f"\n{'='*60}")
-    print(f"파싱: {len(all_items)}, 매칭: {matched}, 미매칭: {len(unmatched)}")
-    print(f"업데이트: {len(set(updated_ids))} rows, 총 이월액: {sum(i['carryover'] for i in all_items):,}")
 
-    if unmatched:
-        print(f"\n--- 미매칭 ({len(unmatched)}) ---")
-        for u in unmatched:
-            print(f"  {u['dept']} | {u['detail'][:35]} | type={u.get('carryover_type','?')} | {u['carryover']:,}")
-
-    conn2 = sqlite3.connect(DB_PATH)
-    c = conn2.execute("SELECT COUNT(*),SUM(carryover) FROM budget_items WHERE dept IN ('도시과','건설과')").fetchone()
-    print(f"\n[DONE] DB: rows={c[0]}, total_carryover={c[1]:,}")
-
-if __name__ == '__main__': main()
+if __name__ == "__main__":
+    main()

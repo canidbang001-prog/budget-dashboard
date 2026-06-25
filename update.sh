@@ -57,18 +57,12 @@ echo "▶ 3단계: 재원 rollup 보정"
 #      컬럼 없으면 추가
 # (이 로직은 6.5단계에서 carryover 중복 제거 + 함께 처리됨. 여기서는 컬럼 추가만)
 
-# 5) 이월 적용 (3개 .xls: 명시/사고/계속비)
+# 5) 이월 적용 (3개 .xls: 명시/사고/계속비) — ◎이월액 노드 INSERT
 echo ""
 echo "▶ 4단계: 이월 적용"
-for XLS in "2025회계연도 명시이월 현황.xls" \
-           "2025회계연도 사고이월 현황.xls" \
-           "2025회계연도 계속비이월 현황.xls"; do
-    if [ -f "$XLS" ]; then
-        .venv/bin/python parse_carryover_all.py "$XLS" "$DB" || echo "  ⚠️ $XLS 처리 실패 (계속)"
-    else
-        echo "  ⚠️ $XLS 파일 없음 (skip)"
-    fi
-done
+.venv/bin/python parse_carryover.py "2025회계연도 명시이월 현황.xls" \
+                                       "2025회계연도 사고이월 현황.xls" \
+                                       "2025회계연도 계속비이월 현황.xls" "$DB" 2>&1 | tail -10
 
 # 6) 검증
 echo ""
