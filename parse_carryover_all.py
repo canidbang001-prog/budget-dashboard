@@ -71,6 +71,11 @@ def safe_int(v):
         return 0
 
 
+def won_to_kwon(v):
+    """원 → 천원 변환 (이월 조서는 원 단위, DB는 천원 단위)"""
+    return round(v / 1000) if v else 0
+
+
 def extract_base_policy(pol):
     pol = norm(pol)
     return re.sub(r'\s*\([^)]+\)\s*$', '', pol).strip()
@@ -101,13 +106,14 @@ def parse_xls(path):
                 continue
 
             # 재원 (col 11~16): 국/균/기/특/도/군
-            carry = safe_int(ws.cell_value(r, 6))
-            nat = safe_int(ws.cell_value(r, 11))
-            bal = safe_int(ws.cell_value(r, 12))  # 균특
-            fund = safe_int(ws.cell_value(r, 13))  # 기금
-            spec = safe_int(ws.cell_value(r, 14))  # 특교세
-            prov = safe_int(ws.cell_value(r, 15))
-            cnty = safe_int(ws.cell_value(r, 16))
+            # 이월 조서는 원 단위, DB는 천원 단위 → ÷1000
+            carry = won_to_kwon(safe_int(ws.cell_value(r, 6)))
+            nat = won_to_kwon(safe_int(ws.cell_value(r, 11)))
+            bal = won_to_kwon(safe_int(ws.cell_value(r, 12)))  # 균특
+            fund = won_to_kwon(safe_int(ws.cell_value(r, 13)))  # 기금
+            spec = won_to_kwon(safe_int(ws.cell_value(r, 14)))  # 특교세
+            prov = won_to_kwon(safe_int(ws.cell_value(r, 15)))
+            cnty = won_to_kwon(safe_int(ws.cell_value(r, 16)))
 
             if carry == 0 and not (pol or unit or detail or stat):
                 continue

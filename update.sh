@@ -71,6 +71,16 @@ echo ""
 echo "▶ 5단계: 검증"
 .venv/bin/python verify.py "$DB"
 
+# 6.5) WAL checkpoint (컨테이너가 최신 데이터 볼 수 있도록)
+.venv/bin/python -c "
+import sqlite3
+conn = sqlite3.connect('$DB')
+c = conn.cursor()
+c.execute('PRAGMA wal_checkpoint(FULL)')
+print('WAL checkpoint:', c.fetchone())
+conn.close()
+"
+
 # 7) 컨테이너 재시작
 echo ""
 echo "▶ 6단계: 컨테이너 재시작"
