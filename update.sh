@@ -75,7 +75,7 @@ echo ""
 echo "▶ 5단계: 검증"
 .venv/bin/python verify.py "$DB"
 
-# 6.5) carryover 3종 + budget 음수 → 0 보정
+# 6.5) carryover 3종 + budget 음수 → 0 보정 + dept d=0 subtree 보정
 .venv/bin/python -c "
 import sqlite3
 DB = '$DB'
@@ -106,7 +106,33 @@ n_dup = c.execute('''
 ''').rowcount
 print(f'  carryover 중복 제거 (d<=6): {n_dup}개')
 
-# carryover_3종 status 동기화 (d=7 만)
+# dept d=0 subtree 보정 (dept의 실제 총예산 = 자식 subtree budget + carryover 합)
+# (페이지에서 dept 노드의 budget이 '총예산'으로 표시되어야 함)
+c.execute('DROP TABLE IF EXISTS tmp_subtree')
+c.execute('''
+    CREATE TEMP TABLE tmp_subtree AS
+    WITH RECURSIVE sub(id, anc, ba, co) AS (
+        SELECT id, id, budget_amount, carryover FROM budget_items WHERE depth=0
+        UNION ALL
+        SELECT b.id, s.anc, b.budget_amount, b.carryover
+        FROM budget_items b JOIN sub s ON b.parent_id=s.id
+    )
+    SELECT s.anc AS dept_id, SUM(s.ba) AS sub_ba, SUM(s.co) AS sub_co
+    FROM sub s
+    WHERE s.id != s.anc
+    GROUP BY s.anc
+''')
+n_sub = c.execute('''
+    UPDATE budget_items
+    SET budget_amount = (SELECT sub_ba FROM tmp_subtree WHERE dept_id = budget_items.id),
+        carryover = (SELECT sub_co FROM tmp_subtree WHERE dept_id = budget_items.id)
+    WHERE depth = 0
+''').rowcount
+c.execute('DROP TABLE tmp_subtree')
+conn.commit()
+print(f'  dept d=0 subtree 보정: {n_sub}개')
+
+# carryover_3종 status 동기화 (d=0~7 모두)
 n_sync = c.execute('''
     UPDATE budget_items SET
         carryover_continued = CASE WHEN status='계속비' THEN carryover ELSE 0 END,

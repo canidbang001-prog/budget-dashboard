@@ -40,8 +40,7 @@ parser.add_argument('--include-carryover-total', action='store_true',
 parser.add_argument('--include-budget', action='store_true',
                     help='budget_amount도 rollup (parser_v8의 last_row_id swap 버그 보정)')
 parser.add_argument('--subtree', action='store_true',
-                    help='재귀 (subtree 전체) 합으로 rollup — leaf 음수/작은 budget 보정, '
-                         'carryover를 부모(dept/정책/단위)에도 분배')
+                    help='재귀 (subtree 전체) 합으로 rollup — dept/정책/단위에 자식 전체 사업 합 표시')
 args = parser.parse_args()
 
 DB = args.db
@@ -101,30 +100,60 @@ for col in TARGET_COLS:
     )
 child_sums_sql_str = ',\n           '.join(child_sums_sql)
 
+# --subtree 모드: 재귀 CTE (subtree 전체) 합
+# --include-budget (기본): 직접 자식 합
+if args.subtree:
+    sub_selects = []
+    for col in TARGET_COLS:
+        sub_selects.append(
+            f"COALESCE((WITH RECURSIVE sub(id, anc, {col}) AS ("
+            f"SELECT id, id, {col} FROM budget_items "
+            f"UNION ALL "
+            f"SELECT b.id, s.anc, b.{col} FROM budget_items b JOIN sub s ON b.parent_id = s.id) "
+            f"SELECT SUM(s.{col}) FROM sub s WHERE s.anc = b.id AND s.id != b.id), 0) AS child_{col}"
+        )
+        sub_selects_str = ',\n               '.join(sub_selects)
+    # row는 (id, depth, self_fsum(0), self_fsum, child_<col>...)
+    # self_fsum은 finance 6종 합 (depth 0~6 용)
+    main_query = f"""
+        WITH child_sum AS (
+            SELECT b.id AS parent_id, {sub_selects_str}
+            FROM budget_items b
+            WHERE EXISTS (SELECT 1 FROM budget_items c WHERE c.parent_id = b.id)
+        )
+        SELECT cs.parent_id, b.depth,
+               b.finance_national + b.finance_province + b.finance_county +
+               b.finance_special + b.finance_balance + b.finance_other AS self_fsum,
+               cs.child_finance_national + cs.child_finance_province + cs.child_finance_county +
+               cs.child_finance_special + cs.child_finance_balance + cs.child_finance_other AS child_fsum
+        FROM child_sum cs
+        JOIN budget_items b ON b.id = cs.parent_id
+        ORDER BY b.id
+    """
+else:
+    main_query = f"""
+        WITH child_sum AS (
+            SELECT
+                b.id AS parent_id,
+                {child_sums_sql_str}
+            FROM budget_items b
+            LEFT JOIN budget_items c ON c.parent_id = b.id
+            GROUP BY b.id
+        )
+        SELECT cs.parent_id, b.depth,
+               b.finance_national + b.finance_province + b.finance_county +
+               b.finance_special + b.finance_balance + b.finance_other AS self_fsum,
+               cs.child_finance_national + cs.child_finance_province + cs.child_finance_county +
+               cs.child_finance_special + cs.child_finance_balance + cs.child_finance_other AS child_fsum
+        FROM child_sum cs
+        JOIN budget_items b ON b.id = cs.parent_id
+        WHERE b.id IN (SELECT DISTINCT parent_id FROM budget_items WHERE parent_id IS NOT NULL)
+        ORDER BY b.id
+    """
+
 updates = []
 total_parents = 0
-# --subtree 모드: 재귀 CTE (subtree 전체) 합
-# --include-budget: 직접 자식 합
-# 기본: 직접 자식 합
-for row in c.execute(f"""
-    WITH child_sum AS (
-        SELECT
-            b.id AS parent_id,
-            {child_sums_sql_str}
-        FROM budget_items b
-        LEFT JOIN budget_items c ON c.parent_id = b.id
-        GROUP BY b.id
-    )
-    SELECT cs.parent_id, b.depth,
-           b.finance_national + b.finance_province + b.finance_county +
-           b.finance_special + b.finance_balance + b.finance_other AS self_fsum,
-           cs.child_finance_national + cs.child_finance_province + cs.child_finance_county +
-           cs.child_finance_special + cs.child_finance_balance + cs.child_finance_other AS child_fsum
-    FROM child_sum cs
-    JOIN budget_items b ON b.id = cs.parent_id
-    WHERE b.id IN (SELECT DISTINCT parent_id FROM budget_items WHERE parent_id IS NOT NULL)
-    ORDER BY b.id
-"""):
+for row in c.execute(main_query):
     pid, depth, self_fsum, child_fsum = row
     total_parents += 1
     # 차이 확인 (finance 6종만)
@@ -137,29 +166,55 @@ for row in c.execute(f"""
 print(f"   전체 부모 노드: {total_parents:,}개")
 print(f"   변경 대상 조회 중...")
 
-select_child_cols = ',\n           '.join(
-    f"cs.child_{col} AS {col}_new" for col in TARGET_COLS
-)
-select_self_cols = ',\n           '.join(f"b.{col}" for col in TARGET_COLS)
+if args.subtree:
+    sub_selects2 = []
+    for col in TARGET_COLS:
+        sub_selects2.append(
+            f"COALESCE((WITH RECURSIVE sub(id, anc, {col}) AS ("
+            f"SELECT id, id, {col} FROM budget_items "
+            f"UNION ALL "
+            f"SELECT b.id, s.anc, b.{col} FROM budget_items b JOIN sub s ON b.parent_id = s.id) "
+            f"SELECT SUM(s.{col}) FROM sub s WHERE s.anc = b.id AND s.id != b.id), 0) AS {col}_new"
+        )
+    sub_selects2_str = ',\n               '.join(sub_selects2)
+    main_query2 = f"""
+        WITH child_sum AS (
+            SELECT b.id AS parent_id, {sub_selects2_str}
+            FROM budget_items b
+            WHERE EXISTS (SELECT 1 FROM budget_items c WHERE c.parent_id = b.id)
+        )
+        SELECT cs.parent_id AS id, b.depth,
+               {','.join(f'cs.{col}_new' for col in TARGET_COLS)},
+               {','.join(f'b.{col}' for col in TARGET_COLS)}
+        FROM child_sum cs
+        JOIN budget_items b ON b.id = cs.parent_id
+        ORDER BY b.id
+    """
+else:
+    select_child_cols = ',\n           '.join(
+        f"cs.child_{col} AS {col}_new" for col in TARGET_COLS
+    )
+    select_self_cols = ',\n           '.join(f"b.{col}" for col in TARGET_COLS)
+    main_query2 = f"""
+        WITH child_sum AS (
+            SELECT
+                b.id AS parent_id,
+                {child_sums_sql_str}
+            FROM budget_items b
+            LEFT JOIN budget_items c ON c.parent_id = b.id
+            GROUP BY b.id
+        )
+        SELECT cs.parent_id AS id, b.depth,
+               {select_child_cols},
+               {select_self_cols}
+        FROM child_sum cs
+        JOIN budget_items b ON b.id = cs.parent_id
+        WHERE b.id IN (SELECT DISTINCT parent_id FROM budget_items WHERE parent_id IS NOT NULL)
+        ORDER BY b.id
+    """
 
 mismatches = 0
-for row in c.execute(f"""
-    WITH child_sum AS (
-        SELECT
-            b.id AS parent_id,
-            {child_sums_sql_str}
-        FROM budget_items b
-        LEFT JOIN budget_items c ON c.parent_id = b.id
-        GROUP BY b.id
-    )
-    SELECT cs.parent_id AS id, b.depth,
-           {select_child_cols},
-           {select_self_cols}
-    FROM child_sum cs
-    JOIN budget_items b ON b.id = cs.parent_id
-    WHERE b.id IN (SELECT DISTINCT parent_id FROM budget_items WHERE parent_id IS NOT NULL)
-    ORDER BY b.id
-"""):
+for row in c.execute(main_query2):
     pid = row[0]
     depth = row[1]
     new_vals = row[2:2 + len(TARGET_COLS)]
