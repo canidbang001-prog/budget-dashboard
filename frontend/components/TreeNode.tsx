@@ -156,15 +156,13 @@ export default function TreeNode({ node, depth = 0, autoExpand = false, onSelect
           )}
         </span>
 
-        {/* Budget amount — 클릭 시 재원 모달 */}
+        {/* Budget amount — carryover 제외 (트리 펼침 시 일관성) */}
         <span
           className="text-xs font-mono text-slate-600 shrink-0 cursor-pointer hover:text-blue-600 hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors"
           onClick={(e) => { e.stopPropagation(); onSelect?.(node); }}
-          title="클릭: 재원 구분 보기"
+          title={node.carryover > 0 ? `당해 ${formatCompact(node.budget_amount)} + 이월 ${formatCompact(node.carryover)}` : '클릭: 재원 구분 보기'}
         >
-          {node.carryover > 0
-            ? formatCompact(node.budget_amount + node.carryover)
-            : formatCompact(node.budget_amount)}
+          {formatCompact(node.budget_amount)}
         </span>
 
         {/* Finance tags */}
