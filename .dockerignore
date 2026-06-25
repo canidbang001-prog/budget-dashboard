@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+*.csv
+*.json
+!summary.json
+.git/
+.DS_Store
+docs/
+frontend/
