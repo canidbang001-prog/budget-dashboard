@@ -317,12 +317,13 @@ def parse_all(db_path=None):
 
                 # 편성목: item_col starts with \d{3}\s → depth=5
                 if item_col and re.match(r'^\d{3}\s', item_col):
+                    # is_total=0: budget_amount = 0 (자식 subtree 합은 rollup_finance.py가 보정)
                     cur.execute(
                         '''INSERT INTO budget_items
                            (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, basis, budget_amount, budget_amount_raw, page, row_num, is_total)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         (fallback, 5, current_dept, current_policy, current_unit, current_detail,
-                         current_label, item_code, item_col, calc, basis, budget_amount, budget_amount_raw, page_name, row_num, 0)
+                         current_label, item_code, item_col, calc, basis, 0, budget_amount_raw, page_name, row_num, 0)
                     )
                     last_item_id = cur.lastrowid
                     last_row_id = last_item_id
@@ -333,12 +334,13 @@ def parse_all(db_path=None):
                 # 통계목: calc starts with \d{2}\s → depth=6
                 if calc and re.match(r'^\d{2}\s', calc):
                     parent_id = last_item_id or fallback
+                    # is_total=0: budget_amount = 0
                     cur.execute(
                         '''INSERT INTO budget_items
                            (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, basis, budget_amount, budget_amount_raw, page, row_num, is_total)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         (parent_id, 6, current_dept, current_policy, current_unit, current_detail,
-                         current_label, item_code, item_col, calc, basis, budget_amount, budget_amount_raw, page_name, row_num, 0)
+                         current_label, item_code, item_col, calc, basis, 0, budget_amount_raw, page_name, row_num, 0)
                     )
                     last_subitem_id = cur.lastrowid
                     last_row_id = last_subitem_id
@@ -348,12 +350,13 @@ def parse_all(db_path=None):
                 # 편성내용: calc starts with ◎ or ○ → depth=7
                 if calc and (calc.startswith('◎') or calc.startswith('○')):
                     parent_id = last_subitem_id or last_item_id or fallback
+                    # is_total=0: budget_amount = 0
                     cur.execute(
                         '''INSERT INTO budget_items
                            (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, basis, budget_amount, budget_amount_raw, page, row_num, is_total)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         (parent_id, 7, current_dept, current_policy, current_unit, current_detail,
-                         current_label, item_code, item_col, calc, basis, budget_amount, budget_amount_raw, page_name, row_num, 0)
+                         current_label, item_code, item_col, calc, basis, 0, budget_amount_raw, page_name, row_num, 0)
                     )
                     last_row_id = cur.lastrowid
                     total_inserted += 1
@@ -369,7 +372,7 @@ def parse_all(db_path=None):
                        (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, basis, budget_amount, budget_amount_raw, page, row_num, is_total)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (fallback, 5, current_dept, current_policy, current_unit, current_detail,
-                     current_label, item_code, item_col, calc, basis, budget_amount, budget_amount_raw, page_name, row_num, 0)
+                     current_label, item_code, item_col, calc, basis, 0, budget_amount_raw, page_name, row_num, 0)
                 )
                 last_row_id = cur.lastrowid
                 total_inserted += 1
