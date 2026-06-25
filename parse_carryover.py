@@ -145,6 +145,126 @@ def parse_xls(path, carryover_type):
     return items
 
 
+def create_new_tree(c, ex, carryover_type, eco):
+    """
+    매칭 실패한 이월 사업 = 본예산에 신규 트리 생성
+    (dept + policy + unit + detail + label + item + calc + ◎이월액)
+
+    Returns: ◎이월액 노드의 id (성공) / None (실패)
+    """
+    ed = norm(ex["dept"])
+    ep = norm(ex["policy"])
+    eu = norm(ex["unit"])
+    edet = norm(ex["detail"])
+    label_code = ex.get("label_code", "").strip()
+    calc_name = ex.get("calc_name", "").strip()
+
+    if not ed:
+        return None
+
+    try:
+        # dept (d=0)
+        row = c.execute("SELECT id FROM budget_items WHERE depth=0 AND dept=? LIMIT 1", (ed,)).fetchone()
+        if row:
+            dept_id = row[0]
+        else:
+            c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (NULL, 0, ?, '', '', '', 0, 1)", (ed,))
+            dept_id = c.lastrowid
+
+        # policy (d=1)
+        if ep:
+            row = c.execute("SELECT id FROM budget_items WHERE depth=1 AND dept=? AND policy=? LIMIT 1", (ed, ep)).fetchone()
+            if row:
+                pol_id = row[0]
+            else:
+                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (?, 1, ?, ?, '', '', 0, 1)", (dept_id, ed, ep))
+                pol_id = c.lastrowid
+        else:
+            pol_id = dept_id
+
+        # unit (d=2)
+        if eu:
+            row = c.execute("SELECT id FROM budget_items WHERE depth=2 AND dept=? AND policy=? AND unit=? LIMIT 1", (ed, ep, eu)).fetchone()
+            if row:
+                unit_id = row[0]
+            else:
+                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (?, 2, ?, ?, ?, '', 0, 1)", (pol_id, ed, ep, eu))
+                unit_id = c.lastrowid
+        else:
+            unit_id = pol_id
+
+        # detail (d=3)
+        if edet:
+            row = c.execute("SELECT id FROM budget_items WHERE depth=3 AND dept=? AND unit=? AND detail=? LIMIT 1", (ed, eu, edet)).fetchone()
+            if row:
+                det_id = row[0]
+            else:
+                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (?, 3, ?, ?, ?, ?, 0, 1)", (unit_id, ed, ep, eu, edet))
+                det_id = c.lastrowid
+        else:
+            det_id = unit_id
+
+        # label (d=4) + item (d=5) — col 5 통계목의 label_code 추출
+        if label_code:
+            row = c.execute("SELECT id FROM budget_items WHERE depth=4 AND dept=? AND detail=? AND label=? LIMIT 1", (ed, edet, label_code)).fetchone()
+            if row:
+                lbl_id = row[0]
+            else:
+                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 4, ?, ?, ?, ?, ?, '', '', '', 0, 1)", (det_id, ed, ep, eu, edet, label_code))
+                lbl_id = c.lastrowid
+
+            item_name = f"{label_code} (편성목)"
+            row = c.execute("SELECT id FROM budget_items WHERE depth=5 AND dept=? AND detail=? AND item_code=? LIMIT 1", (ed, edet, label_code)).fetchone()
+            if row:
+                item_id = row[0]
+            else:
+                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 5, ?, ?, ?, ?, ?, ?, ?, '', 0, 1)", (lbl_id, ed, ep, eu, edet, label_code, label_code, item_name))
+                item_id = c.lastrowid
+        else:
+            item_id = det_id
+
+        # calc (d=6) — 통계목
+        if calc_name:
+            row = c.execute("SELECT id FROM budget_items WHERE depth=6 AND dept=? AND detail=? AND calc_name=? LIMIT 1", (ed, edet, calc_name)).fetchone()
+            if row:
+                calc_id = row[0]
+            else:
+                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 6, ?, ?, ?, ?, '', '', '', ?, 0, 1)", (item_id, ed, ep, eu, edet, calc_name))
+                calc_id = c.lastrowid
+        else:
+            calc_id = item_id
+
+        # ◎이월액 (d=7) INSERT
+        c.execute("""
+            INSERT INTO budget_items
+            (parent_id, depth, dept, policy, unit, detail, label, item_code,
+             item_name, calc_name, basis, budget_amount, budget_amount_raw,
+             page, row_num, is_total, status,
+             carryover, carryover_national, carryover_province, carryover_county,
+             carryover_special, carryover_balance, carryover_other,
+             carryover_continued, carryover_explicit, carryover_accident)
+            VALUES (?, 7, ?, ?, ?, ?, '', '',
+                    ?, '◎이월액', ?, ?, ?,
+                    '', 0, 1, ?,
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?)
+        """, (
+            calc_id,
+            ex["dept"], ex["policy"], ex["unit"], ex["detail"],
+            ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
+            carryover_type, eco,
+            ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
+            ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
+            eco if carryover_type == "계속비" else 0,
+            eco if carryover_type == "명시이월" else 0,
+            eco if carryover_type == "사고이월" else 0,
+        ))
+        return c.lastrowid
+    except Exception as e:
+        print(f"  ⚠️ 신규 트리 생성 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
+        return None
+
+
 def match_and_insert(db_path, items, carryover_type):
     """
     매칭 → ◎이월액 노드 INSERT
@@ -239,8 +359,15 @@ def match_and_insert(db_path, items, carryover_type):
                 ]
 
         if not cands:
-            unmatched.append(ex)
-            continue
+            # 매칭 실패 → 본예산에 신규 트리 생성
+            # (dept + policy + unit + detail + label + item + calc + ◎이월액)
+            parent_id = create_new_tree(c, ex, carryover_type, eco)
+            if parent_id:
+                matched += 1
+                continue
+            else:
+                unmatched.append(ex)
+                continue
 
         # 가장 깊은 (depth 큰) 노드 = ◎이월액 노드 parent
         cands.sort(key=lambda r: -r[5])  # depth 내림차순
