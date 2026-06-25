@@ -58,13 +58,14 @@ for d, cnt, amt in depth_dist:
 # ── 3. depth 0 (부서) 재원 검증 ──────────────────────
 print(f"\n🔍 depth 0 (부서) 재원 일치 검증")
 dept_issues = []
-for row in c.execute("""
+r = c.execute("""
     SELECT id, dept, budget_amount,
            finance_national + finance_province + finance_county +
            finance_special + finance_balance + finance_other AS fsum
     FROM budget_items
     WHERE depth = 0
-"""):
+""")
+for row in r:
     id_, dept, amt, fsum = row
     if (amt or 0) != (fsum or 0):
         dept_issues.append((id_, dept, amt, fsum))

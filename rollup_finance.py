@@ -1,16 +1,22 @@
 """
-rollup_finance.py — 재원 rollup 보정 (post-processing)
+rollup_finance.py — 재원 + budget_amount rollup 보정 (post-processing)
 
-정책: 각 부모 노드의 재원 6종 = 직접 자식 (parent_id = b.id) 재원 6종 합
+정책: 각 부모 노드의 재원 6종 + budget_amount = 자식 subtree 합
   - 자식 없는 leaf (depth 7) 는 자기 값 유지
   - is_total과 무관 — 합계/소계 노드도 rollup (원래 값 무시)
   - depth 0 (부서) 도 rollup (직접 자식 = depth 1 노드들)
+  - carryover 컬럼도 함께 rollup (옵션)
+
+  ⚠️  재원 6종만 부모-자식 합 보정 시 budget_amount가 자식 합과 안 맞으면
+     API에서 "depth 5 자기 budget" vs "실제 자식 합"이 다른 문제 발생.
+     --include-budget 옵션으로 budget_amount도 함께 rollup.
 
 Usage:
   python rollup_finance.py [db_path]
     --apply              실제 UPDATE 실행 (기본은 dry-run)
     --backup             UPDATE 전 자동 백업
-
+    --include-budget     budget_amount도 rollup (depth 0~6)
+    --include-carryover  carryover 6종도 rollup (기본은 finance 6종만)
 수정 영향:
   - parser_v8.py의 "재원 행 = last_row_id에 UPDATE" 로직이 어긋난 부분 보정
   - parse_carryover.py의 carryover 분배도 같이 보정됨 (carryover는 별도 컬럼이라 미수정)
@@ -29,6 +35,8 @@ parser.add_argument('--apply', action='store_true', help='실제 UPDATE 실행')
 parser.add_argument('--backup', action='store_true', help='UPDATE 전 자동 백업')
 parser.add_argument('--include-carryover', action='store_true',
                     help='carryover 6종도 rollup (기본은 finance 6종만)')
+parser.add_argument('--include-budget', action='store_true',
+                    help='budget_amount도 rollup (parser_v8의 last_row_id swap 버그 보정)')
 args = parser.parse_args()
 
 DB = args.db
@@ -41,7 +49,8 @@ if not os.path.exists(DB):
 
 print(f"🔄 재원 rollup 보정: {DB}")
 print(f"   모드: {'APPLY (실제 변경)' if APPLY else 'DRY-RUN (시뮬레이션)'}")
-print(f"   대상: {'finance + carryover' if args.include_carryover else 'finance 6종만'}")
+print(f"   대상: {'finance + carryover' if args.include_carryover else 'finance 6종만'}"
+      f"{' + budget_amount' if args.include_budget else ''}")
 print("=" * 60)
 
 conn = sqlite3.connect(DB)
@@ -64,6 +73,8 @@ CARRYOVER_COLS = [
     'carryover_special', 'carryover_balance', 'carryover_other',
 ]
 TARGET_COLS = FINANCE_COLS + (CARRYOVER_COLS if args.include_carryover else [])
+if args.include_budget:
+    TARGET_COLS = ['budget_amount'] + TARGET_COLS
 
 # carryover_continued/explicit/accident 는 status에서 파생 — 별도 처리
 STATUS_COLS = ['carryover_continued', 'carryover_explicit', 'carryover_accident']
