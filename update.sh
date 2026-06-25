@@ -96,6 +96,19 @@ echo ""
 echo "▶ 5단계: 검증"
 .venv/bin/python verify.py "$DB"
 
+# 6.5) carryover 3종 + budget 음수 → 0 보정
+.venv/bin/python -c "
+import sqlite3
+DB = '$DB'
+conn = sqlite3.connect(DB)
+c = conn.cursor()
+# budget 음수 노드 → 0으로 clamp
+n_neg = c.execute('UPDATE budget_items SET budget_amount = 0 WHERE budget_amount < 0').rowcount
+conn.commit()
+print(f'budget 음수 → 0 보정: {n_neg}개')
+conn.close()
+"
+
 # 6.5) WAL checkpoint (컨테이너가 최신 데이터 볼 수 있도록)
 .venv/bin/python -c "
 import sqlite3

@@ -39,6 +39,9 @@ parser.add_argument('--include-carryover-total', action='store_true',
                     help='carryover (메인) + carryover_* 6종 모두 rollup (트리 합계 표시용)')
 parser.add_argument('--include-budget', action='store_true',
                     help='budget_amount도 rollup (parser_v8의 last_row_id swap 버그 보정)')
+parser.add_argument('--subtree', action='store_true',
+                    help='재귀 (subtree 전체) 합으로 rollup — leaf 음수/작은 budget 보정, '
+                         'carryover를 부모(dept/정책/단위)에도 분배')
 args = parser.parse_args()
 
 DB = args.db
@@ -100,6 +103,9 @@ child_sums_sql_str = ',\n           '.join(child_sums_sql)
 
 updates = []
 total_parents = 0
+# --subtree 모드: 재귀 CTE (subtree 전체) 합
+# --include-budget: 직접 자식 합
+# 기본: 직접 자식 합
 for row in c.execute(f"""
     WITH child_sum AS (
         SELECT
