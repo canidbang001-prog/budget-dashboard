@@ -26,6 +26,18 @@ if [ -f "$DB" ]; then
     echo "📦 백업: .backups/budget_${TIMESTAMP}.db"
 fi
 
+# 1.5) 프론트엔드 빌드 (선택, frontend/out 없으면)
+if [ -d frontend ] && [ ! -d frontend/out ]; then
+    echo ""
+    echo "▶ 1.5단계: frontend 빌드 (next build)"
+    cd frontend
+    if [ ! -d node_modules ]; then
+        npm install --include=dev --no-audit --no-fund
+    fi
+    npm run build
+    cd ..
+fi
+
 # 2) xlsx → csv
 echo ""
 echo "▶ 1단계: xlsx → csv"
