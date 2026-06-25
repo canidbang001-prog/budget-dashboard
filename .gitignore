@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
 
 # SQLite WAL/Shm
 *.db-shm

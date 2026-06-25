@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    image: budget-dashboard:latest
+    container_name: budget-dashboard
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./budget.db:/app/budget.db
+      - ./summary.json:/app/summary.json
+      - ./budget.csv:/app/budget.csv
+    restart: unless-stopped
