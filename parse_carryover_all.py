@@ -331,44 +331,90 @@ def match_and_update(db_path, items):
             if do_exec(c8):
                 continue
 
-        # Pass 9: 본예산에 매칭 안 됨 → 신규 ◎ 노드 INSERT
+        # Pass 9: 본예산에 매칭 안 됨 → 신규 ◎ 노드 INSERT (cascade)
         # (이월 조서에 "(성립전)" 사업 = 본예산에 없는 사업 = 순수 이월)
-        # dept + policy + unit + detail 모두 정확 일치하는 d=3 (세부) 노드만 매칭
-        # (= 같은 세부 사업 본예산에 있고, 그 세부 안에 신규 ◎ 노드 INSERT)
-        if ed and ep and eu and edet:
-            ancestors = cursor.execute("""
+        # dept + policy + unit + detail → cascade 매칭:
+        #   d=3 (detail) 있으면 그 자식으로 ◎ INSERT
+        #   없으면 d=2 (unit) 자리에 신규 detail INSERT 후 ◎ INSERT
+        #   그것도 없으면 d=1 (policy) 자리에 신규 unit+detail INSERT 후 ◎ INSERT
+        #   그것도 없으면 d=0 (dept) 자리에 신규 policy+unit+detail INSERT 후 ◎ INSERT
+
+        if ed and ep:
+            cur_parent_id = None
+            cur_depth = 7  # 최종 ◎ 노드 d=7
+
+            # 1) d=3 (detail) 매칭 시도
+            row = cursor.execute("""
                 SELECT id FROM budget_items
                 WHERE dept=? AND policy=? AND unit=? AND detail=? AND depth=3
                 LIMIT 1
             """, (ed, ep, eu, edet)).fetchone()
 
-            if ancestors:
-                parent_id = ancestors[0]
-                # 신규 ◎ 노드 INSERT (순수 이월 = 본예산에 없는 사업)
-                cursor.execute("""
-                    INSERT INTO budget_items
-                    (parent_id, depth, dept, policy, unit, detail, item_name, calc_name,
-                     budget_amount, budget_amount_raw, page, row_num, is_total, status,
-                     carryover, carryover_national, carryover_province, carryover_county,
-                     carryover_special, carryover_balance, carryover_other,
-                     carryover_continued, carryover_explicit, carryover_accident)
-                    VALUES (?, 7, ?, ?, ?, ?, ?, ?, 0, 0, '', 0, 0, ?, ?,
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (parent_id, ed, ep, eu, edet,
-                      ex.get('item_name', ''), ex.get('carryover_reason', ''),
-                      cotype, eco,
-                      ex.get('carryover_national', 0),
-                      ex.get('carryover_province', 0),
-                      ex.get('carryover_county', 0),
-                      ex.get('carryover_special', 0),
-                      ex.get('carryover_balance', 0),
-                      ex.get('carryover_other', 0),
-                      eco if cotype == '계속비' else 0,
-                      eco if cotype == '명시이월' else 0,
-                      eco if cotype == '사고이월' else 0))
-                updated_ids.append(cursor.lastrowid)
-                matched += 1
-                continue
+            if row:
+                cur_parent_id = row[0]
+            else:
+                # 2) d=2 (unit) 매칭 시도, 없으면 신규 unit INSERT
+                row = cursor.execute("""
+                    SELECT id FROM budget_items
+                    WHERE dept=? AND policy=? AND unit=? AND depth=2
+                    LIMIT 1
+                """, (ed, ep, eu)).fetchone()
+
+                if row:
+                    cur_parent_id = row[0]
+                else:
+                    # 신규 unit (d=2) INSERT
+                    cursor.execute("""
+                        INSERT INTO budget_items
+                        (parent_id, depth, dept, policy, unit, detail,
+                         budget_amount, budget_amount_raw, page, row_num, is_total, status)
+                        VALUES (?, 2, ?, ?, ?, '', 0, 0, '', 0, 0, '')
+                    """, (cur_parent_id, ed, ep, eu))
+                    cur_parent_id = cursor.lastrowid
+
+                # 3) d=3 (detail) 매칭 시도, 없으면 신규 detail INSERT
+                row = cursor.execute("""
+                    SELECT id FROM budget_items
+                    WHERE parent_id=? AND detail=? AND depth=3
+                    LIMIT 1
+                """, (cur_parent_id, edet)).fetchone()
+
+                if row:
+                    cur_parent_id = row[0]
+                else:
+                    cursor.execute("""
+                        INSERT INTO budget_items
+                        (parent_id, depth, dept, policy, unit, detail,
+                         budget_amount, budget_amount_raw, page, row_num, is_total, status)
+                        VALUES (?, 3, ?, ?, ?, ?, 0, 0, '', 0, 0, '')
+                    """, (cur_parent_id, ed, ep, eu, edet))
+                    cur_parent_id = cursor.lastrowid
+
+            # 4) ◎ 노드 (d=7) 신규 INSERT
+            cursor.execute("""
+                INSERT INTO budget_items
+                (parent_id, depth, dept, policy, unit, detail, item_name, calc_name,
+                 budget_amount, budget_amount_raw, page, row_num, is_total, status,
+                 carryover, carryover_national, carryover_province, carryover_county,
+                 carryover_special, carryover_balance, carryover_other,
+                 carryover_continued, carryover_explicit, carryover_accident)
+                VALUES (?, 7, ?, ?, ?, ?, ?, ?, 0, 0, '', 0, 0, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (cur_parent_id, ed, ep, eu, edet,
+                  ex.get('item_name', ''), ex.get('carryover_reason', ''),
+                  cotype, eco,
+                  ex.get('carryover_national', 0),
+                  ex.get('carryover_province', 0),
+                  ex.get('carryover_county', 0),
+                  ex.get('carryover_special', 0),
+                  ex.get('carryover_balance', 0),
+                  ex.get('carryover_other', 0),
+                  eco if cotype == '계속비' else 0,
+                  eco if cotype == '명시이월' else 0,
+                  eco if cotype == '사고이월' else 0))
+            updated_ids.append(cursor.lastrowid)
+            matched += 1
+            continue
 
         unmatched.append(ex)
 
