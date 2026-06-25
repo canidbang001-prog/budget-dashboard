@@ -115,6 +115,16 @@ def parse_xls(path):
             prov = won_to_kwon(safe_int(ws.cell_value(r, 15)))
             cnty = won_to_kwon(safe_int(ws.cell_value(r, 16)))
 
+            # 통계목 (col 5): 본예산 label+calc 합성 ("207-01\n연구용역비")
+            # → label="207", calc="01" 추출 (Pass 9 매칭용)
+            stat_raw = norm(ws.cell_value(r, 5))
+            stat_match = re.match(r'^(\d{3})-(\d{2})', stat_raw)
+            stat_label = stat_match.group(1) if stat_match else ''
+            stat_calc = stat_match.group(2) if stat_match else ''
+
+            # 이월사유 (col 17): 본예산 ◎ calc_name과 1:1 매칭 (Pass 8)
+            carryover_reason = norm(ws.cell_value(r, 17))
+
             if carry == 0 and not (pol or unit or detail or stat):
                 continue
 
@@ -124,6 +134,9 @@ def parse_xls(path):
                 'unit': unit,
                 'detail': detail,
                 'item_name': stat,  # 통계목
+                'stat_label': stat_label,  # 편성목 코드 (예: "207")
+                'stat_calc': stat_calc,    # 통계목 코드 (예: "01")
+                'carryover_reason': carryover_reason,  # 이월사유 (= 본예산 ◎ calc)
                 'carryover': carry,
                 'carryover_national': nat,
                 'carryover_province': prov,
@@ -154,13 +167,20 @@ def match_and_update(db_path, items):
     # 예: "도시과" → "도시과", "홍성읍" → "홍성읍"
     # 정확 매칭이 안 되면 fuzzy
 
-    # 매칭 후보: dept + policy + unit + detail
+    # 매칭 후보: dept + policy + unit + detail + calc_name
     db_rows = cursor.execute("""
         SELECT id, dept, policy, unit, detail, item_name, calc_name, budget_amount, depth
         FROM budget_items
         WHERE depth >= 3
     """).fetchall()
     print(f"  DB 매칭 후보: {len(db_rows):,}개 (depth>=3)")
+
+    # Pass 8 전용: label + calc_name까지 가져오기 (◎노드 매칭)
+    db_rows_full = cursor.execute("""
+        SELECT id, dept, policy, unit, detail, item_name, label, calc_name, budget_amount, depth
+        FROM budget_items
+        WHERE depth >= 3
+    """).fetchall()
 
     matched = 0
     unmatched = []
@@ -202,8 +222,15 @@ def match_and_update(db_path, items):
                 matched += 1
                 return True
             if len(candidates) > 1:
-                # depth 4 (label) 우선, 그 다음 depth 5 (item)
-                best = sorted(candidates, key=lambda r: (4 if r[8] == 4 else 5 if r[8] == 5 else 99))[0]
+                # depth 7 (편성내용 ◎/○) 우선, 그 다음 depth 6 (통계목), 5 (편성목)
+                def depth_rank(r):
+                    d = r[8]
+                    if d == 7: return 0
+                    if d == 6: return 1
+                    if d == 5: return 2
+                    if d == 4: return 3
+                    return 99
+                best = sorted(candidates, key=depth_rank)[0]
                 cursor.execute(
                     f"UPDATE budget_items SET {set_clause} WHERE id = ?",
                     (*params[:-1], best[0])
@@ -270,6 +297,39 @@ def match_and_update(db_path, items):
                             or norm(r[4]).replace(' ', '').replace('.', '') in edet.replace(' ', '').replace('.', ''))]
         if do_exec(c7):
             continue
+
+        # Pass 8: dept + policy + unit + detail + label + calc (◎노드 매칭)
+        # 이월 조서의 "통계목" (예: "207-01\n연구용역비") = 본예산 label+calc
+        # 이월 조서의 "이월사유" (예: "용역 준공 미도래") = 본예산 ◎ calc_name
+        # DB에 label 컬럼이 비어있어 item_name에서 추출
+        # 예: item_name="207 연구개발비" → 라벨 코드 "207"
+        ereason = ex.get('carryover_reason', '').strip()
+        elast = ex.get('stat_label', '').strip()
+        ecalc = ex.get('stat_calc', '').strip()
+
+        if ereason or (elast and ecalc):
+            c8 = []
+            for r in db_rows_full:
+                if norm(r[1]) != ed or extract_base_policy(r[2]) != ep:
+                    continue
+                if norm(r[3]) != eu or norm(r[4]) != edet:
+                    continue
+                # stat_label 매칭: item_name이 "207 연구개발비" 처럼 숫자로 시작
+                if elast:
+                    item_name = norm(r[6])
+                    # item_name의 첫 단어가 elast와 일치
+                    item_code = item_name.split()[0] if item_name else ''
+                    if item_code != elast:
+                        continue
+                # stat_calc 매칭 (예: "01" = calc "01")
+                if ecalc and norm(r[7]) != ecalc:
+                    continue
+                # carryover_reason 매칭 (◎ calc 텍스트가 일치)
+                if ereason and ereason not in norm(r[7]):
+                    continue
+                c8.append(r)
+            if do_exec(c8):
+                continue
 
         unmatched.append(ex)
 
