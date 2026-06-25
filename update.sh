@@ -51,7 +51,32 @@ echo "▶ 2단계: csv → db"
 # 4) 재원 rollup 보정 (parser 버그 보정)
 echo ""
 echo "▶ 3단계: 재원 rollup 보정"
-.venv/bin/python rollup_finance.py "$DB" --apply
+.venv/bin/python rollup_finance.py "$DB" --apply --include-budget --include-carryover
+
+# 4.5) carryover_continued/explicit/accident 컬럼 동기화 (status 기반)
+#      컬럼 없으면 추가
+.venv/bin/python -c "
+import sqlite3, sys
+DB = '$DB'
+conn = sqlite3.connect(DB)
+c = conn.cursor()
+cols = [r[1] for r in c.execute('PRAGMA table_info(budget_items)').fetchall()]
+for col in ('carryover_continued', 'carryover_explicit', 'carryover_accident'):
+    if col not in cols:
+        c.execute(f'ALTER TABLE budget_items ADD COLUMN {col} INTEGER DEFAULT 0')
+        print(f'  컬럼 추가: {col}')
+c.execute('''
+    UPDATE budget_items
+    SET carryover_continued = CASE WHEN status='계속비' THEN carryover ELSE 0 END,
+        carryover_explicit = CASE WHEN status='명시이월' THEN carryover ELSE 0 END,
+        carryover_accident = CASE WHEN status='사고이월' THEN carryover ELSE 0 END
+    WHERE status IN ('계속비', '명시이월', '사고이월')
+''')
+n = c.rowcount
+conn.commit()
+print(f'  carryover 3종 동기화: {n}개')
+conn.close()
+"
 
 # 5) 이월 적용 (3개 .xls: 명시/사고/계속비)
 echo ""
