@@ -15,9 +15,15 @@ import sqlite3
 import sys
 import traceback
 
-CSV_DIR = '/root/.openclaw/workspace/디렉이/project_3003'
-CSV_GLOB = 'budget*.csv'
-DB_PATH = '/root/.openclaw/workspace/디렉이/project_3003/budget.db'
+CSV_DIR = os.environ.get(
+    'CSV_DIR',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)))
+)
+CSV_GLOB = os.environ.get('CSV_GLOB', 'budget*.csv')
+DB_PATH = os.environ.get(
+    'DB_PATH',
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), 'budget.db')
+)
 
 FINANCE_MAP = {
     '국': 'finance_national',
@@ -413,6 +419,10 @@ def parse_all(db_path=None):
 
 
 if __name__ == '__main__':
+    # CLI: parser_v8.py [db_path]
+    # env: DB_PATH, CSV_DIR, CSV_GLOB
     db_path = sys.argv[1] if len(sys.argv) > 1 else None
-    count = parse_all(db_path)
+    if db_path:
+        DB_PATH = db_path
+    count = parse_all(DB_PATH)
     print(f'✅ Done: {count} rows')

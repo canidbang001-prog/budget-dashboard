@@ -15,6 +15,13 @@ budget.db.before_full_rebuild
 budget_backup_*.db
 budget_v*.db
 
+# Original data (xlsx/xls) - too large for git
+*.xlsx
+*.xls
+
+# Backup folder
+.backups/
+
 # Environment
 .env
 .env.*

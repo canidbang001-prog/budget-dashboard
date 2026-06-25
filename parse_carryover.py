@@ -1,14 +1,36 @@
-"""이월조서 파싱 + 합본예산서 DB 매칭 v5 — carryover_type + 재원 6종 추적"""
+"""이월조서 파싱 + 합본예산서 DB 매칭 v5 — carryover_type + 재원 6종 추적
+v5.1: 40개 부서 전체 지원 (예산팀 전체 파일)
+"""
 import os, re, shutil
 from datetime import datetime
 import xlrd, sqlite3
 
-DEPTS = ['도시과', '건설과']
+# 이 파일들이 우리 repo에 있으면 자동 인식
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_CARRYOVER_DIR = _HERE
+
+# 3개 파일: 명시이월, 사고이월, 계속비이월 (각각 모든 부서 포함)
 FILES = {
-    '도시과': '/root/.openclaw/workspace/datasource/도시과/이월사업조서.xls',
-    '건설과': '/root/.openclaw/workspace/아라/복사본 2025회계연도 2026년 이월사업조서(명시，사고，계속비)_건설과.xls',
+    '명시이월': os.path.join(_HERE, '2025회계연도 명시이월 현황.xls'),
+    '사고이월': os.path.join(_HERE, '2025회계연도 사고이월 현황.xls'),
+    '계속비': os.path.join(_HERE, '2025회계연도 계속비이월 현황.xls'),
 }
-DB_PATH = '/root/.openclaw/workspace/디렉이/project_3003/budget.db'
+CARRYOVER_TYPE_FILES = {
+    '명시이월': os.environ.get('CARRYOVER_FILE_명시'),
+    '사고이월': os.environ.get('CARRYOVER_FILE_사고'),
+    '계속비': os.environ.get('CARRYOVER_FILE_계속'),
+}
+for k, v in CARRYOVER_TYPE_FILES.items():
+    if v:
+        FILES[k] = v
+
+# DEPTS: 더 이상 제한 없음. 파일 안에 모든 부서가 있음.
+DEPTS = []  # 빈 리스트 = 제한 없음 (모든 dept 매칭 시도)
+
+DB_PATH = os.environ.get(
+    'DB_PATH',
+    os.path.join(_HERE, 'budget.db')
+)
 
 def norm(s):
     if not s: return ''
@@ -129,9 +151,18 @@ FINANCE_FIELDS = [
 
 def match_and_update(db_conn, excel_items):
     cursor = db_conn.cursor()
-    db_rows = cursor.execute(
-        "SELECT id,dept,policy,unit,detail,item_name,calc_name,budget_amount,depth FROM budget_items WHERE dept IN (?,?) AND depth >= 3",
-        (DEPTS[0],DEPTS[1])).fetchall()
+    # DEPTS 비어있으면 = 모든 dept 매칭 (필터 없음)
+    if DEPTS:
+        placeholders = ','.join('?' * len(DEPTS))
+        db_rows = cursor.execute(
+            f"SELECT id,dept,policy,unit,detail,item_name,calc_name,budget_amount,depth "
+            f"FROM budget_items WHERE dept IN ({placeholders}) AND depth >= 3",
+            DEPTS).fetchall()
+    else:
+        db_rows = cursor.execute(
+            "SELECT id,dept,policy,unit,detail,item_name,calc_name,budget_amount,depth "
+            "FROM budget_items WHERE depth >= 3"
+        ).fetchall()
     matched=0; unmatched=[]; updated_ids=[]
 
     for ex in excel_items:
