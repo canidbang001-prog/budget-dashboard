@@ -35,6 +35,8 @@ parser.add_argument('--apply', action='store_true', help='실제 UPDATE 실행')
 parser.add_argument('--backup', action='store_true', help='UPDATE 전 자동 백업')
 parser.add_argument('--include-carryover', action='store_true',
                     help='carryover 6종도 rollup (기본은 finance 6종만)')
+parser.add_argument('--include-carryover-total', action='store_true',
+                    help='carryover (메인) + carryover_* 6종 모두 rollup (트리 합계 표시용)')
 parser.add_argument('--include-budget', action='store_true',
                     help='budget_amount도 rollup (parser_v8의 last_row_id swap 버그 보정)')
 args = parser.parse_args()
@@ -73,6 +75,8 @@ CARRYOVER_COLS = [
     'carryover_special', 'carryover_balance', 'carryover_other',
 ]
 TARGET_COLS = FINANCE_COLS + (CARRYOVER_COLS if args.include_carryover else [])
+if args.include_carryover_total:
+    TARGET_COLS = ['carryover'] + CARRYOVER_COLS + FINANCE_COLS
 if args.include_budget:
     TARGET_COLS = ['budget_amount'] + TARGET_COLS
 

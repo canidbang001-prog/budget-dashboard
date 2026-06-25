@@ -156,14 +156,24 @@ export default function TreeNode({ node, depth = 0, autoExpand = false, onSelect
           )}
         </span>
 
-        {/* Budget amount — carryover 제외 (트리 펼침 시 일관성) */}
+        {/* Budget amount — ◎/○ 노드 (d=7)에 carryover 있으면 budget+carryover 합 표시 (본예산+이월) */}
         <span
           className="text-xs font-mono text-slate-600 shrink-0 cursor-pointer hover:text-blue-600 hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors"
           onClick={(e) => { e.stopPropagation(); onSelect?.(node); }}
           title={node.carryover > 0 ? `당해 ${formatCompact(node.budget_amount)} + 이월 ${formatCompact(node.carryover)}` : '클릭: 재원 구분 보기'}
         >
-          {formatCompact(node.budget_amount)}
+          {formatCompact(node.budget_amount + node.carryover)}
         </span>
+
+        {/* Carryover 인라인 배지 (◎/○ 노드) */}
+        {node.carryover > 0 && (
+          <span
+            className="ml-1.5 text-[10px] font-mono text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded shrink-0"
+            title={`이월 ${formatCompact(node.carryover)}`}
+          >
+            + 📍이월 {formatCompact(node.carryover)}
+          </span>
+        )}
 
         {/* Finance tags */}
         {hasFinance && (
