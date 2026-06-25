@@ -107,7 +107,10 @@ def parse_xls(path):
 
             # 재원 (col 11~16): 국/균/기/특/도/군
             # 이월 조서는 원 단위, DB는 천원 단위 → ÷1000
-            carry = won_to_kwon(safe_int(ws.cell_value(r, 6)))
+            # col 10 = "다음 연도 이월 액" (사용자 확인: r4 헤더 '다 음 연 도 이 월 액')
+            # col 6 = "예산액" (이게 아님!) — 이거 잘못 읽었었음
+            # col 11~16 = 재원 6종 (국/균/기/특/도/군)
+            carry = won_to_kwon(safe_int(ws.cell_value(r, 10)))
             nat = won_to_kwon(safe_int(ws.cell_value(r, 11)))
             bal = won_to_kwon(safe_int(ws.cell_value(r, 12)))  # 균특
             fund = won_to_kwon(safe_int(ws.cell_value(r, 13)))  # 기금
@@ -290,11 +293,10 @@ def match_and_update(db_path, items):
         if do_exec(c6):
             continue
 
-        # Pass 7: dept + partial detail (item 무시)
+        # Pass 7: dept + exact detail (item 무시, 정확 일치)
+        # (partial 매칭 제거: "전통시장" 같은 짧은 substring으로 다른 사업이 매칭되는 버그)
         c7 = [r for r in db_rows
-              if norm(r[1]) == ed and norm(r[4])
-              and edet and (edet in norm(r[4]).replace(' ', '').replace('.', '')
-                            or norm(r[4]).replace(' ', '').replace('.', '') in edet.replace(' ', '').replace('.', ''))]
+              if norm(r[1]) == ed and norm(r[4]) == edet]
         if do_exec(c7):
             continue
 
