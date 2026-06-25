@@ -106,31 +106,31 @@ n_dup = c.execute('''
 ''').rowcount
 print(f'  carryover 중복 제거 (d<=6): {n_dup}개')
 
-# dept d=0 subtree 보정 (dept의 실제 총예산 = 자식 subtree budget + carryover 합)
+# dept d=0 subtree 보정 (dept의 실제 총예산 = 자식 subtree budget 합)
 # (페이지에서 dept 노드의 budget이 '총예산'으로 표시되어야 함)
+# carryover는 d=7에만 유지 (dept d=0에 분배 안 함 → 중복 방지)
 c.execute('DROP TABLE IF EXISTS tmp_subtree')
 c.execute('''
     CREATE TEMP TABLE tmp_subtree AS
-    WITH RECURSIVE sub(id, anc, ba, co) AS (
-        SELECT id, id, budget_amount, carryover FROM budget_items WHERE depth=0
+    WITH RECURSIVE sub(id, anc, ba) AS (
+        SELECT id, id, budget_amount FROM budget_items WHERE depth=0
         UNION ALL
-        SELECT b.id, s.anc, b.budget_amount, b.carryover
+        SELECT b.id, s.anc, b.budget_amount
         FROM budget_items b JOIN sub s ON b.parent_id=s.id
     )
-    SELECT s.anc AS dept_id, SUM(s.ba) AS sub_ba, SUM(s.co) AS sub_co
+    SELECT s.anc AS dept_id, SUM(s.ba) AS sub_ba
     FROM sub s
     WHERE s.id != s.anc
     GROUP BY s.anc
 ''')
 n_sub = c.execute('''
     UPDATE budget_items
-    SET budget_amount = (SELECT sub_ba FROM tmp_subtree WHERE dept_id = budget_items.id),
-        carryover = (SELECT sub_co FROM tmp_subtree WHERE dept_id = budget_items.id)
+    SET budget_amount = (SELECT sub_ba FROM tmp_subtree WHERE dept_id = budget_items.id)
     WHERE depth = 0
 ''').rowcount
 c.execute('DROP TABLE tmp_subtree')
 conn.commit()
-print(f'  dept d=0 subtree 보정: {n_sub}개')
+print(f'  dept d=0 subtree 보정 (budget만): {n_sub}개')
 
 # carryover_3종 status 동기화 (d=0~7 모두)
 n_sync = c.execute('''
