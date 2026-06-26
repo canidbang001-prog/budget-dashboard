@@ -100,6 +100,11 @@ XLS_PATH=/path/to/xls .venv/bin/python parse_carryover.py
 - Docker (FastAPI 서빙용)
 - xlsx 원본은 NAS `/volume1/.../합본예산서-대시보드/` 에 두면 자동 인식
 
+## 관련 문서
+
+- [`docs/WORKLOG_2026-06-26.md`](docs/WORKLOG_2026-06-26.md) — v22 carryover 정합성 fix 작업 일지
+- [`docs/TODO_NEXT_WEEK.md`](docs/TODO_NEXT_WEEK.md) — 다음 주 우선순위 todo (계속비이월 fix, UI 개선 등)
+
 ## 작업 일지 (2026-06-26)
 
 ### v22 carryover 정합성 fix
