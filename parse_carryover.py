@@ -18,16 +18,22 @@ parse_carryover.py — 이월 조서 → DB에 ◎이월액 가상 노드 INSERT
   - 그 밑에 ◎이월액 노드 INSERT (depth=7)
   - "이월사업" dept = 본예산 매칭 안 된 이월 모음
 
-엑셀 컬럼 (r5 헤더 기준):
+엑셀 컬럼 매핑 (carryover_type별 분기 — 명시/사고 vs 계속비 양식 상이):
+
+명시이월 / 사고이월 (동일 양식):
 - 0: 조직 (dept)
-- 2: 정책 (policy)
-- 3: 단위 (unit)
-- 4: 세부 (detail)
-- 5: 통계목 (item_name, "207-01\n연구용역비" → "01 연구용역비"만 추출)
-- 6: 예산액 (무시, 본예산 budget)
+- 2: 정책 (policy) | 3: 단위 (unit) | 4: 세부 (detail) | 5: 통계목
 - 10: 다음 연도 이월 액 (carryover 본값)
-- 11~16: 국/균/기/특/도/군 (재원 6종)
-- 17: 이월사유 (carryover_reason, 우측 패널 표시용)
+- 11~16: 국비/균특/기금/특교세/도비/군비 (재원 6종)
+- 17: 이월사유 (carryover_reason)
+
+계속비이월 (별도 양식):
+- 0: 조직 | 2: 정책 | 3: 단위 | 4: 세부 | 5: 통계목
+- 6: 예산계상액 | 7: 전년도이월액 | 9: 계 | 10: 지출금액 | 11: 금후지출소요액
+- 12: 잔액
+- 13: 다음연도 이월액 (carryover 본값)
+- 14~18: 국비/균특/기금/특교세/도비 (재원 5종 — 군비 없음)
+- 사유 컬럼 없음
 
 사용법: python parse_carryover.py <이월조서.xls> [이월조서2.xls ...]
 DB = ./budget.db (default)
@@ -37,6 +43,67 @@ import sqlite3
 import sys
 import xlrd
 from collections import defaultdict
+
+
+# ── 공통 INSERT 헬퍼 ──────────────────────────────────────────
+# 27 컬럼 × 27 값 정합을 한 곳에서 보장 (복붙 INSERT 3종 통합)
+_CARRYOVER_INSERT_SQL = """
+    INSERT INTO budget_items
+    (parent_id, depth, dept, policy, unit, detail, label, item_code,
+     item_name, calc_name, basis, budget_amount, budget_amount_raw,
+     page, row_num, is_total, status,
+     carryover, carryover_national, carryover_province, carryover_county,
+     carryover_special, carryover_balance, carryover_other,
+     carryover_continued, carryover_explicit, carryover_accident)
+    VALUES (?, 7, ?, ?, ?, ?, '', '',
+            ?, '◎이월액', ?, ?, ?,
+            ?, 0, 1, ?,
+            ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?)
+"""
+
+
+def _insert_carryover_node(c, parent_id, ex, eco, carryover_type):
+    """◎이월액 (d=7) 노드 INSERT — 27 컬럼 × 27 값 정합 (단일 진실 공급원).
+
+    Args:
+        c: sqlite3 cursor
+        parent_id: 부모 calc (d=6) 노드 id
+        ex: parse_xls() items dict (carryover, 6col, carryover_type 등 포함)
+        eco: ex["carryover"] (천원 단위 이월액 본값)
+        carryover_type: '명시이월' | '사고이월' | '계속비'
+
+    Returns: INSERT된 row id
+    """
+    c.execute(_CARRYOVER_INSERT_SQL, (
+        parent_id,
+        ex["dept"], ex["policy"], ex["unit"], ex["detail"],
+        ex["calc_name"],                              # item_name
+        ex.get("carryover_reason", ""),               # basis
+        eco,                                          # budget_amount = 이월액 (트리에 금액 표시, d=0 subtree 보정에서 d=7 제외로 중복 방지)
+        eco,                                          # budget_amount_raw
+        ex.get("page", ""),                           # page
+        carryover_type,                               # status
+        eco,                                          # carryover (= ex["carryover"])
+        ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
+        ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
+        eco if carryover_type == "계속비" else 0,
+        eco if carryover_type == "명시이월" else 0,
+        eco if carryover_type == "사고이월" else 0,
+    ))
+    return c.lastrowid
+
+
+def ensure_carryover_columns(c):
+    """carryover_continued/explicit/accident 컬럼 없으면 ALTER TABLE 추가.
+
+    parser_v8 schema엔 3종 컬럼이 없어서 INSERT silent fail 회피.
+    """
+    cols = [r[1] for r in c.execute("PRAGMA table_info(budget_items)").fetchall()]
+    for col in ("carryover_continued", "carryover_explicit", "carryover_accident"):
+        if col not in cols:
+            c.execute(f"ALTER TABLE budget_items ADD COLUMN {col} INTEGER DEFAULT 0")
+            print(f"  컬럼 추가: {col}")
 
 
 def norm(s):
@@ -106,18 +173,32 @@ def parse_xls(path, carryover_type):
             if not stat_raw:
                 continue
 
-            # 다음 연도 이월 액 (col 10)
-            carry = won_to_kwon(safe_int(ws.cell_value(r, 10)))
+            # 컬럼 매핑 — 명시/사고이월 vs 계속비 양식 상이
+            if carryover_type == "계속비":
+                # 계속비: 이월액 col 13, 재원 col 14~18 (국/균/기/특/도, 군비 없음), 사유 없음
+                carry_col = 13
+                nat = won_to_kwon(safe_int(ws.cell_value(r, 14)))
+                bal = won_to_kwon(safe_int(ws.cell_value(r, 15)))   # 균특
+                fund = won_to_kwon(safe_int(ws.cell_value(r, 16)))  # 기금
+                spec = won_to_kwon(safe_int(ws.cell_value(r, 17))) # 특교세
+                prov = won_to_kwon(safe_int(ws.cell_value(r, 18)))  # 도비
+                cnty = 0  # 군비 없음
+                reason_col = None
+            else:
+                # 명시/사고: 이월액 col 10, 재원 col 11~16 (국/균/기/특/도/군), 사유 col 17
+                carry_col = 10
+                nat = won_to_kwon(safe_int(ws.cell_value(r, 11)))
+                bal = won_to_kwon(safe_int(ws.cell_value(r, 12)))   # 균특
+                fund = won_to_kwon(safe_int(ws.cell_value(r, 13)))  # 기금
+                spec = won_to_kwon(safe_int(ws.cell_value(r, 14)))  # 특교세
+                prov = won_to_kwon(safe_int(ws.cell_value(r, 15)))
+                cnty = won_to_kwon(safe_int(ws.cell_value(r, 16)))
+                reason_col = 17
+
+            # 다음 연도 이월 액
+            carry = won_to_kwon(safe_int(ws.cell_value(r, carry_col)))
             if carry == 0:
                 continue
-
-            # 재원 6종 (col 11~16)
-            nat = won_to_kwon(safe_int(ws.cell_value(r, 11)))
-            bal = won_to_kwon(safe_int(ws.cell_value(r, 12)))   # 균특
-            fund = won_to_kwon(safe_int(ws.cell_value(r, 13)))  # 기금
-            spec = won_to_kwon(safe_int(ws.cell_value(r, 14)))  # 특교세
-            prov = won_to_kwon(safe_int(ws.cell_value(r, 15)))
-            cnty = won_to_kwon(safe_int(ws.cell_value(r, 16)))
 
             # calc_name + label_code 추출
             calc_name, label_code = extract_stat_calc(stat_raw)
@@ -137,7 +218,8 @@ def parse_xls(path, carryover_type):
                 "carryover_balance": bal,
                 "carryover_other": fund,
                 "carryover_type": carryover_type,
-                "carryover_reason": norm(ws.cell_value(r, 17)),
+                "carryover_reason": norm(ws.cell_value(r, reason_col)) if reason_col is not None else "",
+                "page": str(r),
             })
         except Exception as e:
             print(f"  ⚠️ r{r} parse error: {e}")
@@ -237,35 +319,8 @@ def create_new_tree(c, ex, carryover_type, eco):
         else:
             calc_id = item_id
 
-        # ◎이월액 (d=7) INSERT
-        # carryover 컬럼도 INSERT — won_to_kwon() 변환된 xls 의 이월 액 (천원 단위).
-        # 사업(d=3) 의 carryover 컬럼이 0 으로 박히는 문제 fix (2026-06-26).
-        c.execute("""
-            INSERT INTO budget_items
-            (parent_id, depth, dept, policy, unit, detail, label, item_code,
-             item_name, calc_name, basis, budget_amount, budget_amount_raw,
-             page, row_num, is_total, status,
-             carryover, carryover_national, carryover_province, carryover_county,
-             carryover_special, carryover_balance, carryover_other,
-             carryover_continued, carryover_explicit, carryover_accident)
-            VALUES (?, 7, ?, ?, ?, ?, '', '',
-                    ?, '◎이월액', ?, ?, ?,
-                    '', 0, 1, ?,
-                    ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?)
-        """, (
-            calc_id,
-            ex["dept"], ex["policy"], ex["unit"], ex["detail"],
-            ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
-            carryover_type, eco,
-            ex["carryover"],
-            ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
-            ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
-            eco if carryover_type == "계속비" else 0,
-            eco if carryover_type == "명시이월" else 0,
-            eco if carryover_type == "사고이월" else 0,
-        ))
-        return c.lastrowid
+        # ◎이월액 (d=7) INSERT — 공통 헬퍼 사용 (27 컬럼 × 27 값 정합)
+        return _insert_carryover_node(c, calc_id, ex, eco, carryover_type)
     except Exception as e:
         print(f"  ⚠️ 신규 트리 생성 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
         return None
@@ -383,35 +438,8 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
         else:
             calc_id = item_id
 
-        # ◎이월액 (d=7) INSERT
-        # carryover 컬럼도 INSERT — won_to_kwon() 변환된 xls 의 이월 액 (천원 단위).
-        # 사업(d=3) 의 carryover 컬럼이 0 으로 박히는 문제 fix (2026-06-26).
-        c.execute("""
-            INSERT INTO budget_items
-            (parent_id, depth, dept, policy, unit, detail, label, item_code,
-             item_name, calc_name, basis, budget_amount, budget_amount_raw,
-             page, row_num, is_total, status,
-             carryover, carryover_national, carryover_province, carryover_county,
-             carryover_special, carryover_balance, carryover_other,
-             carryover_continued, carryover_explicit, carryover_accident)
-            VALUES (?, 7, ?, ?, ?, ?, '', '',
-                    ?, '◎이월액', ?, ?, ?,
-                    '', 0, 1, ?,
-                    ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?)
-        """, (
-            calc_id,
-            ex["dept"], ex["policy"], ex["unit"], ex["detail"],
-            ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
-            carryover_type, eco,
-            ex["carryover"],
-            ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
-            ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
-            eco if carryover_type == "계속비" else 0,
-            eco if carryover_type == "명시이월" else 0,
-            eco if carryover_type == "사고이월" else 0,
-        ))
-        return c.lastrowid
+        # ◎이월액 (d=7) INSERT — 공통 헬퍼 사용 (27 컬럼 × 27 값 정합)
+        return _insert_carryover_node(c, calc_id, ex, eco, carryover_type)
     except Exception as e:
         print(f"  ⚠️ create_new_tree_under 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
         return None
@@ -445,8 +473,19 @@ def match_and_insert(db_path, items, carryover_type):
     matched = 0
     unmatched = []
 
+    # dept='' row 처리: 직전 items의 dept 기억 → 빈 dept 채우기 (todo 3 — 61건 해결)
+    # 이월조서 엑셀에서 col 0이 빈 row = 같은 부서의 연속 row.
+    last_dept = ""
+
     for ex in items:
         ed = norm(ex["dept"])
+        # dept 빈 row → 직전 dept 사용
+        if not ed and last_dept:
+            ed = last_dept
+            ex["dept"] = last_dept  # 원본 dict 갱신 (create_new_tree/_under 등에서 사용)
+        if ed:
+            last_dept = ed
+
         ep = norm(ex["policy"])
         eu = norm(ex["unit"])
         edet = norm(ex["detail"])
@@ -473,6 +512,18 @@ def match_and_insert(db_path, items, carryover_type):
             ]
             if cands:
                 print(f"  [DEBUG] Pass 2 매칭: → cands={[r[0] for r in cands]}")
+
+        # Pass 2.5: 이월조서 정책 괄호 suffix 무시 — ep_stem = ep.split()[0] 매칭
+        # 예: 이월조서 "혁신전략 발굴" vs 본예산 "혁신전략 발굴(산업ㆍ중소기업및에너지/산업진흥ㆍ고도화)"
+        if not cands and len(ep) >= 3:
+            ep_stem = ep.split()[0] if ep.split() else ep
+            cands = [
+                r for r in db_rows
+                if norm(r[1]) == ed and norm(r[3]) == eu and norm(r[4]) == edet
+                and norm(r[2]).split() and norm(r[2]).split()[0] == ep_stem
+            ]
+            if cands:
+                print(f"  [DEBUG] Pass 2.5 stem 매칭: stem={ep_stem} → cands={[r[0] for r in cands]}")
 
         # Pass 3 제거 — detail substring 느슨 매칭 (Pass 5와 동일 이유)
         # Pass 4 제거 — dept+unit만 매칭 (정책/세부 무시)도 "농촌 에너지" 같은
@@ -526,32 +577,9 @@ def match_and_insert(db_path, items, carryover_type):
                     unmatched.append(ex)
                     continue
 
-        # ◎이월액 노드 INSERT
+        # ◎이월액 노드 INSERT — 공통 헬퍼 사용 (27 컬럼 × 27 값 정합)
         try:
-            c.execute("""
-                INSERT INTO budget_items
-                (parent_id, depth, dept, policy, unit, detail, label, item_code,
-                 item_name, calc_name, basis, budget_amount, budget_amount_raw,
-                 page, row_num, is_total, status,
-                 carryover, carryover_national, carryover_province, carryover_county,
-                 carryover_special, carryover_balance, carryover_other,
-                 carryover_continued, carryover_explicit, carryover_accident)
-                VALUES (?, 7, ?, ?, ?, ?, '', '',
-                        ?, '◎이월액', ?, ?, ?,
-                        '', 0, 1, ?,
-                        ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?)
-            """, (
-                parent_id,
-                ex["dept"], ex["policy"], ex["unit"], ex["detail"],
-                ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
-                carryover_type, eco,
-                ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
-                ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
-                eco if carryover_type == "계속비" else 0,
-                eco if carryover_type == "명시이월" else 0,
-                eco if carryover_type == "사고이월" else 0,
-            ))
+            _insert_carryover_node(c, parent_id, ex, eco, carryover_type)
             matched += 1
         except Exception as e:
             unmatched.append(ex)
@@ -596,6 +624,7 @@ def main():
         # 기존 ◎이월액 노드 중 이 type 인 것 삭제 (재실행 가능)
         conn = sqlite3.connect(DB)
         c = conn.cursor()
+        ensure_carryover_columns(c)  # schema self-healing (3종 컬럼 보장)
         n_del = c.execute("""
             DELETE FROM budget_items
             WHERE calc_name = '◎이월액' AND status = ?

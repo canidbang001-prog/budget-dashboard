@@ -111,6 +111,7 @@ c.execute('''
         UNION ALL
         SELECT b.id, s.anc, b.budget_amount
         FROM budget_items b JOIN sub s ON b.parent_id=s.id
+        WHERE b.depth < 7  -- d=7 ◎이월액 노드 제외 (이월액은 본예산 total에 포함 안 함)
     )
     SELECT s.anc AS dept_id, SUM(s.ba) AS sub_ba
     FROM sub s
