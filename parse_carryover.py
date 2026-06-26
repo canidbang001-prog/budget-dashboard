@@ -213,7 +213,8 @@ def create_new_tree(c, ex, carryover_type, eco):
                 c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 4, ?, ?, ?, ?, ?, '', '', '', 0, 1)", (det_id, ed, ep, eu, edet, label_code))
                 lbl_id = c.lastrowid
 
-            item_name = f"{label_code} (편성목)"
+            # item_name = 본예산 패턴과 일치: 편성목명(calc_name) 사용.
+            item_name = calc_name or f"{label_code} (편성목)"
             row = c.execute("SELECT id FROM budget_items WHERE depth=5 AND dept=? AND detail=? AND item_code=? LIMIT 1", (ed, edet, label_code)).fetchone()
             if row:
                 item_id = row[0]
@@ -342,7 +343,9 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
                 """, (det_id, ed, ep, eu, edet, label_code))
                 lbl_id = c.lastrowid
 
-            item_name = f"{label_code} (편성목)"
+            # item_name = 본예산 패턴과 일치: 편성목명(calc_name) 사용.
+            # 예: "01 연구용역비". 기존 f"{label_code} (편성목)" 은 본예산 item_name 과 불일치.
+            item_name = calc_name or f"{label_code} (편성목)"
             row = c.execute("""
                 SELECT id FROM budget_items
                 WHERE depth=5 AND dept=? AND detail=? AND item_code=?
