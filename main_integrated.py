@@ -194,20 +194,17 @@ def api_summary():
     db = get_db(DB_PATH)
     try:
         total_nodes = db.query(func.count(BudgetItem.id)).scalar() or 0
-        # carryover 합계: carryover 컬럼은 raw xls 의 원 단위 값 (중복 계산됨).
-        # 천원 단위 6컬럼 합계 + depth=3 (사업 단위) 만 — UI 가 사업 단위 합계 표시.
+        # carryover 합계: ◎이월액 노드들의 carryover_explicit/accident/continued 만 사용
+        # (사업 d=3 의 6col 은 0 reset — 이중 카운트 회피, source of truth 는 ◎이월액 노드)
         total_carryover = db.query(func.coalesce(
             func.sum(
-                BudgetItem.carryover_national + BudgetItem.carryover_province
-                + BudgetItem.carryover_county + BudgetItem.carryover_special
-                + BudgetItem.carryover_balance + BudgetItem.carryover_other
+                BudgetItem.carryover_explicit
+                + BudgetItem.carryover_continued
+                + BudgetItem.carryover_accident
             ), 0
         )).filter(
-            BudgetItem.depth == 3,
-            (BudgetItem.carryover_national > 0) | (BudgetItem.carryover_province > 0)
-            | (BudgetItem.carryover_county > 0) | (BudgetItem.carryover_special > 0)
-            | (BudgetItem.carryover_balance > 0) | (BudgetItem.carryover_other > 0)
-        ).scalar()
+            BudgetItem.calc_name == '◎이월액',
+        ).scalar() or 0
         dept_rows = db.query(
             BudgetItem.dept,
             func.sum(BudgetItem.budget_amount).label('total_budget'),
@@ -232,9 +229,12 @@ def api_summary():
             unit_count = db.query(func.count(func.distinct(BudgetItem.unit))).filter(
                 BudgetItem.dept == d.dept, BudgetItem.depth == 2, BudgetItem.unit != ''
             ).scalar() or 0
-            # carryover 집계는 depth=3 (사업 단위) 의 천원 단위 6컬럼 합계만 사용.
-            # carryover 단일 컬럼은 raw xls 의 원 단위 + 중복 → 사용 금지.
+            # carryover 집계는 ◎이월액 노드들의 carryover_explicit/accident/continued 만 사용
+            # (사업 d=3 의 6col 은 0 reset — source of truth 는 ◎이월액 노드)
             co_agg = db.query(
+                func.coalesce(func.sum(BudgetItem.carryover_explicit), 0),
+                func.coalesce(func.sum(BudgetItem.carryover_continued), 0),
+                func.coalesce(func.sum(BudgetItem.carryover_accident), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_national), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_province), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_county), 0),
@@ -243,10 +243,10 @@ def api_summary():
                 func.coalesce(func.sum(BudgetItem.carryover_other), 0),
             ).filter(
                 BudgetItem.dept == d.dept,
-                BudgetItem.depth == 3,
+                BudgetItem.calc_name == '◎이월액',
             ).first()
 
-            dept_co_total = (co_agg[0] or 0) + (co_agg[1] or 0) + (co_agg[2] or 0) + (co_agg[3] or 0) + (co_agg[4] or 0) + (co_agg[5] or 0)
+            dept_co_total = (co_agg[0] or 0) + (co_agg[1] or 0) + (co_agg[2] or 0)
 
             departments.append(SummaryDept(
                 dept=d.dept, total_budget=d.total_budget or 0,
@@ -291,6 +291,8 @@ def _patch_dept_carryover(db, tree_items: list[TreeItem]):
             co = cache[ti.id]
         else:
             # RECURSIVE CTE: all descendants of ti.id
+            # carryover 합계 = ◎이월액 노드들의 carryover_explicit/continued/accident 만 사용
+            # (사업 d=3 의 6col carryover_county 는 명시이월 row 1건과 매칭되지만, 같은 값이 ◎이월액 d=6 에도 박혀있어 이중 카운트 회피)
             from sqlalchemy import text
             sql = text('''
                 WITH RECURSIVE subtree(id) AS (
@@ -299,18 +301,28 @@ def _patch_dept_carryover(db, tree_items: list[TreeItem]):
                     SELECT b.id FROM budget_items b JOIN subtree s ON b.parent_id = s.id
                 )
                 SELECT
-                    COALESCE(SUM(b.carryover_national + b.carryover_province
-                                 + b.carryover_county + b.carryover_special
-                                 + b.carryover_balance + b.carryover_other), 0),
-                    COALESCE(SUM(b.carryover_national), 0),
-                    COALESCE(SUM(b.carryover_province), 0),
-                    COALESCE(SUM(b.carryover_county), 0),
-                    COALESCE(SUM(b.carryover_special), 0),
-                    COALESCE(SUM(b.carryover_balance), 0),
-                    COALESCE(SUM(b.carryover_other), 0),
-                    COALESCE(SUM(CASE WHEN b.status = '계속비' THEN (b.carryover_continued + b.carryover_explicit + b.carryover_accident) ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN b.status = '명시이월' THEN (b.carryover_continued + b.carryover_explicit + b.carryover_accident) ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN b.status = '사고이월' THEN (b.carryover_continued + b.carryover_explicit + b.carryover_accident) ELSE 0 END), 0)
+                    COALESCE(SUM(
+                        CASE WHEN b.calc_name='◎이월액' THEN
+                            COALESCE(b.carryover_national, 0)
+                            + COALESCE(b.carryover_province, 0)
+                            + COALESCE(b.carryover_county, 0)
+                            + COALESCE(b.carryover_special, 0)
+                            + COALESCE(b.carryover_balance, 0)
+                            + COALESCE(b.carryover_other, 0)
+                            + COALESCE(b.carryover_explicit, 0)
+                            + COALESCE(b.carryover_continued, 0)
+                            + COALESCE(b.carryover_accident, 0)
+                          ELSE 0 END
+                    ), 0) AS total_carryover,
+                    COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_national ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_province ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_county ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_special ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_balance ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_other ELSE 0 END), 0),
+                    COALESCE(SUM(b.carryover_continued), 0),
+                    COALESCE(SUM(b.carryover_explicit), 0),
+                    COALESCE(SUM(b.carryover_accident), 0)
                 FROM budget_items b
                 WHERE b.id IN (SELECT id FROM subtree)
             ''')

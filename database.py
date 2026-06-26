@@ -39,6 +39,9 @@ class BudgetItem(Base):
     carryover_special = Column(Integer, default=0)
     carryover_balance = Column(Integer, default=0)
     carryover_other = Column(Integer, default=0)
+    carryover_continued = Column(Integer, default=0)
+    carryover_explicit = Column(Integer, default=0)
+    carryover_accident = Column(Integer, default=0)
     summary_text = Column(Text, default='')
 
 
