@@ -280,7 +280,11 @@ def api_summary():
 
 
 def _patch_dept_carryover(db, tree_items: list[TreeItem]):
-    """For every node, aggregate carryover from its entire subtree."""
+    """For every node, aggregate carryover from its entire subtree.
+
+    carryover 단일 컬럼은 의미 모호 (raw 또는 중복) → 6컬럼(천원) 합으로 통일.
+    carryover_continued/explicit/accident 도 동일하게.
+    """
     cache = {}
     for ti in tree_items:
         if ti.id in cache:
@@ -295,16 +299,18 @@ def _patch_dept_carryover(db, tree_items: list[TreeItem]):
                     SELECT b.id FROM budget_items b JOIN subtree s ON b.parent_id = s.id
                 )
                 SELECT
-                    COALESCE(SUM(b.carryover), 0),
+                    COALESCE(SUM(b.carryover_national + b.carryover_province
+                                 + b.carryover_county + b.carryover_special
+                                 + b.carryover_balance + b.carryover_other), 0),
                     COALESCE(SUM(b.carryover_national), 0),
                     COALESCE(SUM(b.carryover_province), 0),
                     COALESCE(SUM(b.carryover_county), 0),
                     COALESCE(SUM(b.carryover_special), 0),
                     COALESCE(SUM(b.carryover_balance), 0),
                     COALESCE(SUM(b.carryover_other), 0),
-                    COALESCE(SUM(CASE WHEN b.status = '계속비' THEN b.carryover ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN b.status = '명시이월' THEN b.carryover ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN b.status = '사고이월' THEN b.carryover ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN b.status = '계속비' THEN (b.carryover_continued + b.carryover_explicit + b.carryover_accident) ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.status = '명시이월' THEN (b.carryover_continued + b.carryover_explicit + b.carryover_accident) ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN b.status = '사고이월' THEN (b.carryover_continued + b.carryover_explicit + b.carryover_accident) ELSE 0 END), 0)
                 FROM budget_items b
                 WHERE b.id IN (SELECT id FROM subtree)
             ''')
