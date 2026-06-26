@@ -194,7 +194,20 @@ def api_summary():
     db = get_db(DB_PATH)
     try:
         total_nodes = db.query(func.count(BudgetItem.id)).scalar() or 0
-        total_carryover = db.query(func.coalesce(func.sum(BudgetItem.carryover), 0)).scalar()
+        # carryover 합계: carryover 컬럼은 raw xls 의 원 단위 값 (중복 계산됨).
+        # 천원 단위 6컬럼 합계 + depth=3 (사업 단위) 만 — UI 가 사업 단위 합계 표시.
+        total_carryover = db.query(func.coalesce(
+            func.sum(
+                BudgetItem.carryover_national + BudgetItem.carryover_province
+                + BudgetItem.carryover_county + BudgetItem.carryover_special
+                + BudgetItem.carryover_balance + BudgetItem.carryover_other
+            ), 0
+        )).filter(
+            BudgetItem.depth == 3,
+            (BudgetItem.carryover_national > 0) | (BudgetItem.carryover_province > 0)
+            | (BudgetItem.carryover_county > 0) | (BudgetItem.carryover_special > 0)
+            | (BudgetItem.carryover_balance > 0) | (BudgetItem.carryover_other > 0)
+        ).scalar()
         dept_rows = db.query(
             BudgetItem.dept,
             func.sum(BudgetItem.budget_amount).label('total_budget'),
@@ -219,28 +232,33 @@ def api_summary():
             unit_count = db.query(func.count(func.distinct(BudgetItem.unit))).filter(
                 BudgetItem.dept == d.dept, BudgetItem.depth == 2, BudgetItem.unit != ''
             ).scalar() or 0
-            # carryover 집계는 depth 무관하게 해당 부서 전체 합산
+            # carryover 집계는 depth=3 (사업 단위) 의 천원 단위 6컬럼 합계만 사용.
+            # carryover 단일 컬럼은 raw xls 의 원 단위 + 중복 → 사용 금지.
             co_agg = db.query(
-                func.coalesce(func.sum(BudgetItem.carryover), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_national), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_province), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_county), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_special), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_balance), 0),
                 func.coalesce(func.sum(BudgetItem.carryover_other), 0),
-            ).filter(BudgetItem.dept == d.dept).first()
+            ).filter(
+                BudgetItem.dept == d.dept,
+                BudgetItem.depth == 3,
+            ).first()
+
+            dept_co_total = (co_agg[0] or 0) + (co_agg[1] or 0) + (co_agg[2] or 0) + (co_agg[3] or 0) + (co_agg[4] or 0) + (co_agg[5] or 0)
 
             departments.append(SummaryDept(
                 dept=d.dept, total_budget=d.total_budget or 0,
                 budget_original=d.budget_original or 0,
                 budget_modified=d.budget_modified or 0,
-                carryover=co_agg[0],
-                carryover_national=co_agg[1],
-                carryover_province=co_agg[2],
-                carryover_county=co_agg[3],
-                carryover_special=co_agg[4],
-                carryover_balance=co_agg[5],
-                carryover_other=co_agg[6],
+                carryover=dept_co_total,
+                carryover_national=co_agg[0],
+                carryover_province=co_agg[1],
+                carryover_county=co_agg[2],
+                carryover_special=co_agg[3],
+                carryover_balance=co_agg[4],
+                carryover_other=co_agg[5],
                 finance_national=d.finance_national or 0,
                 finance_province=d.finance_province or 0,
                 finance_county=d.finance_county or 0,
