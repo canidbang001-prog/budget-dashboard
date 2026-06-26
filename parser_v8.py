@@ -193,16 +193,30 @@ def parse_all(db_path=None):
             budget_amount_raw = budget_raw
 
             # ── 재원 행 검출 ──
+            # ── 수정 #4: last_row_id 가 ◎/○ 노드 (d=7) 면 부모 (관 d=6) 에 finance UPDATE
+            # → carryover 중복 방지, rollup_finance.py 의 직접 자식 합 rollup 과 일치
             is_finance = False
             if not dept and not policy and not unit and not detail and not label and not item_col:
                 if budget_raw and isinstance(budget_amount, int) and budget_amount != 0:
                     for key, field in FINANCE_MAP.items():
                         if budget_raw.lstrip().startswith(key):
                             if last_row_id is not None:
-                                cur.execute(
-                                    f'UPDATE budget_items SET {field} = COALESCE({field},0) + ? WHERE id = ?',
-                                    (budget_amount, last_row_id)
-                                )
+                                # last_row_id 의 depth 확인
+                                lr_depth, lr_parent_id = cur.execute(
+                                    'SELECT depth, parent_id FROM budget_items WHERE id = ?',
+                                    (last_row_id,)
+                                ).fetchone()
+                                # ◎/○ 노드 (d=7, leaf) 면 부모 (관 d=6) 에 UPDATE
+                                if lr_depth == 7 and lr_parent_id is not None:
+                                    cur.execute(
+                                        f'UPDATE budget_items SET {field} = COALESCE({field},0) + ? WHERE id = ?',
+                                        (budget_amount, lr_parent_id)
+                                    )
+                                else:
+                                    cur.execute(
+                                        f'UPDATE budget_items SET {field} = COALESCE({field},0) + ? WHERE id = ?',
+                                        (budget_amount, last_row_id)
+                                    )
                                 total_finance += 1
                             is_finance = True
                             break
