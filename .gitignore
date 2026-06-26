@@ -37,3 +37,7 @@ Thumbs.db
 
 # Misc
 {templates,static}
+
+# === 2026-06-26: malformed/old backups (don't commit) ===
+budget.db.malformed
+budget.db.bak-*

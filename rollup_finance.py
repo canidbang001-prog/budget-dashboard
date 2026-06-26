@@ -100,26 +100,28 @@ for col in TARGET_COLS:
     )
 child_sums_sql_str = ',\n           '.join(child_sums_sql)
 
-# --subtree 모드: 재귀 CTE (subtree 전체) 합
+# --subtree 모드: d=7 leaf ba 합 (carryover 노드는 budget_amount에 carryover 값 반영됨)
 # --include-budget (기본): 직접 자식 합
 if args.subtree:
     sub_selects = []
     for col in TARGET_COLS:
+        # d=7 leaf ba 합 (carryover 노드의 budget_amount = carryover 값이라 자동으로 합산)
         sub_selects.append(
-            f"COALESCE((WITH RECURSIVE sub(id, anc, {col}) AS ("
-            f"SELECT id, id, {col} FROM budget_items "
+            f"COALESCE((WITH RECURSIVE sub(id) AS ("
+            f"SELECT id FROM budget_items WHERE id = outer_b.id "
             f"UNION ALL "
-            f"SELECT b.id, s.anc, b.{col} FROM budget_items b JOIN sub s ON b.parent_id = s.id) "
-            f"SELECT SUM(s.{col}) FROM sub s WHERE s.anc = b.id AND s.id != b.id), 0) AS child_{col}"
+            f"SELECT c.id FROM budget_items c JOIN sub s ON c.parent_id = s.id) "
+            f"SELECT SUM(b.{col}) FROM budget_items b JOIN sub s ON b.id = s.id "
+            f"WHERE b.depth = 7), 0) AS child_{col}"
         )
         sub_selects_str = ',\n               '.join(sub_selects)
     # row는 (id, depth, self_fsum(0), self_fsum, child_<col>...)
     # self_fsum은 finance 6종 합 (depth 0~6 용)
     main_query = f"""
         WITH child_sum AS (
-            SELECT b.id AS parent_id, {sub_selects_str}
-            FROM budget_items b
-            WHERE EXISTS (SELECT 1 FROM budget_items c WHERE c.parent_id = b.id)
+            SELECT outer_b.id AS parent_id, {sub_selects_str}
+            FROM budget_items outer_b
+            WHERE EXISTS (SELECT 1 FROM budget_items c WHERE c.parent_id = outer_b.id)
         )
         SELECT cs.parent_id, b.depth,
                b.finance_national + b.finance_province + b.finance_county +
@@ -170,18 +172,19 @@ if args.subtree:
     sub_selects2 = []
     for col in TARGET_COLS:
         sub_selects2.append(
-            f"COALESCE((WITH RECURSIVE sub(id, anc, {col}) AS ("
-            f"SELECT id, id, {col} FROM budget_items "
+            f"COALESCE((WITH RECURSIVE sub(id) AS ("
+            f"SELECT id FROM budget_items WHERE id = outer_b.id "
             f"UNION ALL "
-            f"SELECT b.id, s.anc, b.{col} FROM budget_items b JOIN sub s ON b.parent_id = s.id) "
-            f"SELECT SUM(s.{col}) FROM sub s WHERE s.anc = b.id AND s.id != b.id), 0) AS {col}_new"
+            f"SELECT c.id FROM budget_items c JOIN sub s ON c.parent_id = s.id) "
+            f"SELECT SUM(b.{col}) FROM budget_items b JOIN sub s ON b.id = s.id "
+            f"WHERE b.depth = 7), 0) AS {col}_new"
         )
     sub_selects2_str = ',\n               '.join(sub_selects2)
     main_query2 = f"""
         WITH child_sum AS (
-            SELECT b.id AS parent_id, {sub_selects2_str}
-            FROM budget_items b
-            WHERE EXISTS (SELECT 1 FROM budget_items c WHERE c.parent_id = b.id)
+            SELECT outer_b.id AS parent_id, {sub_selects2_str}
+            FROM budget_items outer_b
+            WHERE EXISTS (SELECT 1 FROM budget_items c WHERE c.parent_id = outer_b.id)
         )
         SELECT cs.parent_id AS id, b.depth,
                {','.join(f'cs.{col}_new' for col in TARGET_COLS)},

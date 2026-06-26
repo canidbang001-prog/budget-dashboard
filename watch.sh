@@ -24,7 +24,7 @@ exec .venv/bin/watchfiles \
         if docker build -t $IMAGE_NAME . > /tmp/rebuild.log 2>&1; then
             docker rm -f $CONTAINER_NAME 2>/dev/null || true
             docker run -d --name $CONTAINER_NAME --restart unless-stopped --network host \
-                -v $HOST_DATA_DIR/budget.db:/app/budget.db:ro \
+                -v $HOST_DATA_DIR/budget.db:/app/budget.db \
                 -v $HOST_DATA_DIR/summary.json:/app/summary.json:ro \
                 -v $HOST_DATA_DIR/budget.csv:/app/budget.csv:ro \
                 $IMAGE_NAME > /dev/null
