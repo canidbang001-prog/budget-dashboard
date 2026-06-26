@@ -4,7 +4,7 @@
 #   - xlsx_path 미지정 시 repo 내 "2026 전체합본예산서.xlsx" 사용
 #   - 결과: budget.csv → budget.db → 검증
 #
-# 주의: parse_carryover_all.py는 3개 .xls (명시/사고/계속비) 모두 처리
+# 주의: parse_carryover.py는 3개 .xls (명시/사고/계속비) 모두 처리
 #       각 .xls가 repo에 있어야 함
 
 set -e
