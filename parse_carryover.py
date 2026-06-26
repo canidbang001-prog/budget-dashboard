@@ -237,6 +237,8 @@ def create_new_tree(c, ex, carryover_type, eco):
             calc_id = item_id
 
         # ◎이월액 (d=7) INSERT
+        # carryover 컬럼도 INSERT — won_to_kwon() 변환된 xls 의 이월 액 (천원 단위).
+        # 사업(d=3) 의 carryover 컬럼이 0 으로 박히는 문제 fix (2026-06-26).
         c.execute("""
             INSERT INTO budget_items
             (parent_id, depth, dept, policy, unit, detail, label, item_code,
@@ -255,6 +257,7 @@ def create_new_tree(c, ex, carryover_type, eco):
             ex["dept"], ex["policy"], ex["unit"], ex["detail"],
             ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
             carryover_type, eco,
+            ex["carryover"],
             ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
             ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
             eco if carryover_type == "계속비" else 0,
@@ -378,6 +381,8 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
             calc_id = item_id
 
         # ◎이월액 (d=7) INSERT
+        # carryover 컬럼도 INSERT — won_to_kwon() 변환된 xls 의 이월 액 (천원 단위).
+        # 사업(d=3) 의 carryover 컬럼이 0 으로 박히는 문제 fix (2026-06-26).
         c.execute("""
             INSERT INTO budget_items
             (parent_id, depth, dept, policy, unit, detail, label, item_code,
@@ -396,6 +401,7 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
             ex["dept"], ex["policy"], ex["unit"], ex["detail"],
             ex["calc_name"], ex.get("carryover_reason", ""), eco, eco,
             carryover_type, eco,
+            ex["carryover"],
             ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
             ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
             eco if carryover_type == "계속비" else 0,
