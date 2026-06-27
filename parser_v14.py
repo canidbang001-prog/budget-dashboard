@@ -236,6 +236,8 @@ def main():
             budget_amount_raw TEXT, budget_original INTEGER DEFAULT 0,
             budget_modified INTEGER DEFAULT 0, page TEXT, row_num INTEGER DEFAULT 0,
             is_total INTEGER DEFAULT 0, status TEXT DEFAULT '',
+            summary_text TEXT DEFAULT '', prev_amount INTEGER DEFAULT 0,
+            diff_amount INTEGER DEFAULT 0, children_count INTEGER DEFAULT 0,
             finance_national INTEGER DEFAULT 0, finance_province INTEGER DEFAULT 0,
             finance_county INTEGER DEFAULT 0, finance_special INTEGER DEFAULT 0,
             finance_balance INTEGER DEFAULT 0, finance_other INTEGER DEFAULT 0,
@@ -449,16 +451,37 @@ def main():
         dept_data[dept] = d
     z2.close()
 
-    # 2. d=0 중복 제거 — budget_amount가 가장 큰 1개만 남기고 삭제
+    # 2. d=0 중복 제거 — budget_amount가 가장 큰 1개만 남기고,
+    #    삭제되는 노드의 자식 parent_id를 살아남은 노드로 이동
     for dept in dept_data:
         rows = c.execute('SELECT id FROM budget_items WHERE depth=0 AND dept=? ORDER BY budget_amount DESC',
                          (dept,)).fetchall()
         if len(rows) > 1:
+            keep_id = rows[0][0]
             for r in rows[1:]:
+                # 자식들의 parent_id를 살아남은 노드로 이동
+                c.execute('UPDATE budget_items SET parent_id=? WHERE parent_id=?', (keep_id, r[0]))
                 c.execute('DELETE FROM budget_items WHERE id=?', (r[0],))
     conn.commit()
 
-    # 3. 고아 노드 연쇄 삭제
+    # 3. d=1+ 중복 제거 — 같은 dept+policy+unit+detail+label 조합의 노드 병합
+    for d in range(1, 6):
+        dupes = c.execute(f'''
+            SELECT dept, policy, unit, detail, label, item_code, item_name, calc_name, depth,
+                   GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+            FROM budget_items WHERE depth = {d}
+            GROUP BY dept, policy, unit, detail, label, item_code, item_name, calc_name, depth
+            HAVING cnt > 1
+        ''').fetchall()
+        for row in dupes:
+            ids = row[8].split(',')
+            keep_id = int(ids[0])
+            for old_id in ids[1:]:
+                c.execute('UPDATE budget_items SET parent_id=? WHERE parent_id=?', (keep_id, int(old_id)))
+                c.execute('DELETE FROM budget_items WHERE id=?', (int(old_id),))
+        conn.commit()
+
+    # 4. 남은 고아 노드 삭제 (연쇄)
     while True:
         c.execute('''DELETE FROM budget_items WHERE parent_id IS NOT NULL
             AND NOT EXISTS (SELECT 1 FROM budget_items p WHERE p.id = budget_items.parent_id)''')
@@ -504,6 +527,12 @@ def main():
     for dept, d in dept_data.items():
         c.execute('UPDATE budget_items SET budget_amount=?, budget_original=? WHERE depth=0 AND dept=?',
                   (d['budget'], d['budget'], dept))
+    conn.commit()
+
+    # 7. children_count 계산
+    c.execute('''UPDATE budget_items SET children_count = (
+        SELECT COUNT(*) FROM budget_items child WHERE child.parent_id = budget_items.id
+    )''')
     conn.commit()
     c.execute('PRAGMA wal_checkpoint(FULL)')
 
