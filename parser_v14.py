@@ -262,8 +262,24 @@ def main():
                       depth, budget, finance, basis, page, row_num):
         if finance is None or finance == {}:
             finance = _ZERO_FIN
-        key = (dept, policy or '', unit or '', detail or '', label or '', item_code or '',
-               item_name or '', calc_name or '')
+        # depth에 맞는 key만 사용 (하위 depth 값은 제외)
+        if depth == 0:
+            key = (dept, '', '', '', '', '', '', '')
+        elif depth == 1:
+            key = (dept, policy or '', '', '', '', '', '', '')
+        elif depth == 2:
+            key = (dept, policy or '', unit or '', '', '', '', '', '')
+        elif depth == 3:
+            key = (dept, policy or '', unit or '', detail or '', '', '', '', '')
+        elif depth == 4:
+            key = (dept, policy or '', unit or '', detail or '', label or '', '', '', '')
+        elif depth == 5:
+            key = (dept, policy or '', unit or '', detail or '', label or '', item_code or '', '', '')
+        elif depth == 6:
+            key = (dept, policy or '', unit or '', detail or '', label or '', item_code or '', item_name or '', '')
+        else:  # depth == 7
+            key = (dept, policy or '', unit or '', detail or '', label or '', item_code or '',
+                   item_name or '', calc_name or '')
         if key in node_cache:
             nid = node_cache[key]
             # budget 누적 (같은 노드에 여러 시트에서 데이터가 올 수 있음)
