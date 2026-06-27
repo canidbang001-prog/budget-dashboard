@@ -462,6 +462,7 @@ def match_and_insert(db_path, items, carryover_type):
         SELECT id, dept, policy, unit, detail, depth, parent_id
         FROM budget_items
         WHERE depth IN (3, 4, 5, 6) AND (calc_name IS NULL OR calc_name != '◎이월액')
+        AND id < 10000
     """).fetchall()
     print(f"  DB 매칭 후보 (d=3~6): {len(db_rows):,}개")
 
@@ -513,17 +514,17 @@ def match_and_insert(db_path, items, carryover_type):
             if cands:
                 print(f"  [DEBUG] Pass 2 매칭: → cands={[r[0] for r in cands]}")
 
-        # Pass 2.5: 이월조서 정책 괄호 suffix 무시 — ep_stem = ep.split()[0] 매칭
-        # 예: 이월조서 "혁신전략 발굴" vs 본예산 "혁신전략 발굴(산업ㆍ중소기업및에너지/산업진흥ㆍ고도화)"
-        if not cands and len(ep) >= 3:
-            ep_stem = ep.split()[0] if ep.split() else ep
+        # Pass 2.5: 이월조서 정책 괄호 suffix 무시 — stem(괄호 앞까지) 매칭
+        # unit/detail이 달라도 policy stem만 맞으면 매칭 (이월조서는 본예산과 편성 구조가 다를 수 있음)
+        if not cands and len(ep) >= 2:
+            ep_stem = ep.split("(")[0].strip()
             cands = [
                 r for r in db_rows
-                if norm(r[1]) == ed and norm(r[3]) == eu and norm(r[4]) == edet
-                and norm(r[2]).split() and norm(r[2]).split()[0] == ep_stem
+                if norm(r[1]) == ed
+                and norm(r[2]).split("(")[0].strip() == ep_stem
             ]
             if cands:
-                print(f"  [DEBUG] Pass 2.5 stem 매칭: stem={ep_stem} → cands={[r[0] for r in cands]}")
+                print(f"  [DEBUG] Pass 2.5 stem 매칭: stem={ep_stem} → cands={[r[0] for r in cands[:5]]}")
 
         # Pass 3 제거 — detail substring 느슨 매칭 (Pass 5와 동일 이유)
         # Pass 4 제거 — dept+unit만 매칭 (정책/세부 무시)도 "농촌 에너지" 같은
@@ -533,13 +534,18 @@ def match_and_insert(db_path, items, carryover_type):
         # Pass 5 제거 — detail substring 느슨해서 "농촌 에너지" 같은
         # 본예산에 없는 사업이 같은 부모에 잘못 매칭됨
 
-        # Pass 6: dept+unit 정확 (unit 노드 = d=2) — 상위 매칭
+        # Pass 6: dept+policy_stem 정확 (unit 노드 = d=2) — 괄호 무시
         # 사용자 의도: 신규 트리는 "상위 트리 매칭된 부모" 밑에 생성
-        if not cands and ed and eu:
+        if not cands and ed:
+            ep_stem6 = ep.split("(")[0].strip() if ep else ""
             cands = [
                 r for r in db_rows
-                if norm(r[1]) == ed and norm(r[3]) == eu and r[5] == 2
+                if norm(r[1]) == ed
+                and norm(r[2]).split("(")[0].strip() == ep_stem6
+                and r[5] == 2
             ]
+            if cands:
+                print(f"  [DEBUG] Pass 6 stem 매칭: stem={ep_stem6} → cands={[r[0] for r in cands]}")
         # Pass 6 fallback: dept만 (d=2) — 다 모를 때
         if not cands and ed:
             cands = [r for r in db_rows if norm(r[1]) == ed and r[5] == 2]
