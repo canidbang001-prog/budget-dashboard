@@ -88,6 +88,7 @@ interface RawTreeNode {
   detail?: string;
   item_code?: string;
   item_name?: string;
+  label?: string;
   calc_name?: string;
   budget_amount: number;         // 천원 (총예산)
   budget_original?: number;      // 본예산
@@ -156,6 +157,7 @@ function mapTreeNode(raw: RawTreeNode): TreeNodeData {
     detail: raw.detail || '',
     item_code: raw.item_code || '',
     item_name: raw.item_name || '',
+    label: raw.label || '',
     calc_name: raw.calc_name || '',
     budget_amount: raw.budget_amount ?? 0,
     budget_original: raw.budget_original ?? 0,

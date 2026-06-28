@@ -42,6 +42,7 @@ export interface TreeNodeData {
   detail: string;
   item_code: string;
   item_name: string;
+  label: string;
   calc_name: string;
   budget_amount: number;      // 천원 단위 (총예산)
   budget_original: number;    // 본예산 (기준안)
@@ -96,13 +97,20 @@ export interface SearchResultData {
 
 export function getNodeLabel(node: TreeNodeData | SearchResultData): string {
   const n = node as TreeNodeData;
+  // depth별 표시 필드 우선순위 (상위 → 하위):
+  // d=0: dept | d=1: policy | d=2: unit | d=3: detail
+  // d=4: label | d=5: item_name | d=6: calc_name(◎) | d=7: calc_name(○)
+  if (n.depth === 0) return n.dept || '';
+  if (n.depth === 1) return n.policy || '';
+  if (n.depth === 2) return n.unit || '';
+  if (n.depth === 3) return n.detail || n.unit || '';
+  if (n.depth === 4) return n.label || n.detail || '';
+  // d=5: item_name 우선, 없으면 label
+  if (n.depth === 5) return n.item_name || n.label || '';
+  // d=6/d=7: calc_name (◎/○ 마크는 API에서 _patch_tree_marks가 붙임)
   if (n.calc_name) return n.calc_name;
-  // depth >= 4 일 때만 item_name 우선 (통계목 레벨)
-  if (n.item_name && (n.depth >= 4 || !n.detail)) return n.item_name;
-  if (n.detail) return n.detail;
-  if (n.unit) return n.unit;
-  if (n.policy) return n.policy;
-  return n.dept;
+  if (n.item_name) return n.item_name;
+  return n.detail || n.unit || '';
 }
 
 export function getNodePath(node: TreeNodeData | SearchResultData): string {
