@@ -145,6 +145,17 @@ form.addEventListener('submit', async (e) => {
 </html>"""
 
 
+
+def _patch_tree_marks(tree_items):
+    """d=6에 ◎, d=7에 ○ 접두사 붙이기 (◎이월액 제외)"""
+    for ti in tree_items:
+        if ti.calc_name and ti.calc_name != '◎이월액':
+            if ti.depth == 6 and not ti.calc_name.startswith('◎'):
+                ti.calc_name = '◎' + ti.calc_name
+            elif ti.depth == 7 and not ti.calc_name.startswith('○'):
+                ti.calc_name = '○' + ti.calc_name
+    return tree_items
+
 @app.get('/login', response_class=HTMLResponse, include_in_schema=False)
 def login_page():
     return HTMLResponse(content=LOGIN_HTML)
@@ -356,6 +367,7 @@ def api_tree(
         q = q.order_by(BudgetItem.id).limit(limit)
         items = q.all()
         tree_items = [TreeItem.model_validate(i) for i in items]
+        tree_items = _patch_tree_marks(tree_items)
         # Patch depth-0 carryover from department-wide aggregation
         _patch_dept_carryover(db, tree_items)
         return TreeResponse(
@@ -374,6 +386,7 @@ def api_tree_children(item_id: int, limit: int = Query(200)):
             BudgetItem.parent_id == item_id
         ).order_by(BudgetItem.id).limit(limit).all()
         tree_items = [TreeItem.model_validate(c) for c in children]
+        tree_items = _patch_tree_marks(tree_items)
         # Patch depth-0 carryover from department-wide aggregation
         _patch_dept_carryover(db, tree_items)
         return TreeResponse(
