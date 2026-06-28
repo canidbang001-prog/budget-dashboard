@@ -242,7 +242,7 @@ def main():
     _ZERO_FIN = {'national': 0, 'province': 0, 'county': 0, 'special': 0, 'balance': 0, 'other': 0}
 
     def get_or_create(dept, policy, unit, detail, label, item_code, item_name, calc_name,
-                      depth, budget, finance, basis, page, row_num):
+                      depth, budget, finance, basis, page, row_num, parent_calc_name=None):
         if finance is None or finance == {}:
             finance = _ZERO_FIN
 
@@ -301,7 +301,9 @@ def main():
         elif depth == 6:
             parent_id = get_or_create(dept, policy, unit, detail, label, item_code, item_name, '', 5, 0, {}, '', page, 0)
         elif depth == 7:
-            parent_id = get_or_create(dept, policy, unit, detail, label, item_code, item_name, calc_name,
+            # d=7의 부모 d=6는 ◎ calc_name (parent_calc_name), ○ 텍스트(calc_name)가 아님
+            p_cn = parent_calc_name if parent_calc_name is not None else calc_name
+            parent_id = get_or_create(dept, policy, unit, detail, label, item_code, item_name, p_cn,
                                       6, 0, {}, '', page, 0)
 
         c.execute("""
@@ -384,15 +386,17 @@ def main():
                 name_id = f"{row['row_num']}_{name}"
 
             # 노드 생성/조회
-            # d=6: item_name은 상위 d=5 값 유지, calc_name만 새로 설정
-            # d=7: item_name 유지(d=5 값), calc_name 유지(d=6 값), name_id로 고유 식별
+            # d=6: item_name은 상위 d=5 값 유지, calc_name은 ◎ 텍스트
+            # d=7: item_name 유지(d=5 값), calc_name은 ○ 텍스트(name)
+            #      parent d=6는 cur_calc_name(◎ 텍스트) — parent_calc_name으로 전달
             nid = get_or_create(
                 dept, policy, unit, cur_detail, cur_label,
                 cur_item_code,
                 cur_item_name,         # d=6,7도 상위 d=5의 item_name 유지
-                cur_calc_name if d >= 6 else '',
+                name if d == 7 else (cur_calc_name if d == 6 else ''),
                 d, row['budget'], row['finance'], row['basis'],
-                page, row['row_num']
+                page, row['row_num'],
+                cur_calc_name if d == 7 else None
             )
             last_node_id = nid
             total_inserted += 1
