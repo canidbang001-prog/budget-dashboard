@@ -168,6 +168,9 @@ def parse_sheet(z, shared, sheet_num):
                 else:
                     name = g
                 depth = 5
+            elif re.match(r'^\d+$', g):
+                # 숫자만 있는 G셀 = 산출기준/금액이지 사업명이 아님 → skip
+                depth = None
             else:
                 depth = 5; name = g
         elif is_finance:
@@ -243,25 +246,25 @@ def main():
         if finance is None or finance == {}:
             finance = _ZERO_FIN
 
-        # depth-aware key: 해당 depth까지의 필드만 key에 포함
+        # depth-aware key: depth를 첫 번째 요소로 포함 → 서로 다른 depth 간 충돌 차단
         if depth == 0:
-            key = (dept, '', '', '', '', '', '', '')
+            key = (0, dept, '', '', '', '', '', '')
         elif depth == 1:
-            key = (dept, policy or '', '', '', '', '', '', '')
+            key = (1, dept, policy or '', '', '', '', '', '')
         elif depth == 2:
-            key = (dept, policy or '', unit or '', '', '', '', '', '')
+            key = (2, dept, policy or '', unit or '', '', '', '', '')
         elif depth == 3:
-            key = (dept, policy or '', unit or '', detail or '', '', '', '', '')
+            key = (3, dept, policy or '', unit or '', detail or '', '', '', '')
         elif depth == 4:
-            key = (dept, policy or '', unit or '', detail or '', label or '', '', '', '')
+            key = (4, dept, policy or '', unit or '', detail or '', label or '', '', '')
         elif depth == 5:
-            key = (dept, policy or '', unit or '', detail or '', label or '',
-                   item_code or '', item_name or '', '')
+            key = (5, dept, policy or '', unit or '', detail or '', label or '',
+                   item_code or '', item_name or '')
         elif depth == 6:
-            key = (dept, policy or '', unit or '', detail or '', label or '',
+            key = (6, dept, policy or '', unit or '', detail or '', label or '',
                    item_code or '', item_name or '', calc_name or '')
         else:  # depth == 7
-            key = (dept, policy or '', unit or '', detail or '', label or '',
+            key = (7, dept, policy or '', unit or '', detail or '', label or '',
                    item_code or '', item_name or '', calc_name or '', name_id or '')
 
         if key in node_cache:
@@ -381,12 +384,12 @@ def main():
                 name_id = f"{row['row_num']}_{name}"
 
             # 노드 생성/조회
-            # d=6: calc_name만 설정, item_name은 상위(d=5) 값 유지
-            # d=7: calc_name 유지(d=6 값), name으로 산출내역명 저장
+            # d=6: item_name은 상위 d=5 값 유지, calc_name만 새로 설정
+            # d=7: item_name 유지(d=5 값), calc_name 유지(d=6 값), name_id로 고유 식별
             nid = get_or_create(
                 dept, policy, unit, cur_detail, cur_label,
                 cur_item_code,
-                cur_item_name if d <= 5 else '',
+                cur_item_name,         # d=6,7도 상위 d=5의 item_name 유지
                 cur_calc_name if d >= 6 else '',
                 d, row['budget'], row['finance'], row['basis'],
                 page, row['row_num']
@@ -464,7 +467,7 @@ def main():
                 c.execute('DELETE FROM budget_items WHERE id=?', (r[0],))
     conn.commit()
 
-    # 3. d=1~6 중복 제거 (같은 dept+policy+unit+...+calc_name 조합)
+    # 3. d=1~6 중복 제거 (같은 depth 내에서 동일 key 조합만 머지)
     for d in range(1, 7):
         dupes = c.execute(f'''
             SELECT GROUP_CONCAT(id) as ids, COUNT(*) as cnt
@@ -476,7 +479,13 @@ def main():
             ids = row[0].split(',')
             keep_id = int(ids[0])
             for old_id in ids[1:]:
+                # 자식의 parent_id를 keep_id로 이동
                 c.execute('UPDATE budget_items SET parent_id=? WHERE parent_id=?', (keep_id, int(old_id)))
+                # 삭제할 노드의 budget_amount를 keep_id에 누적
+                old_budget = c.execute('SELECT budget_amount FROM budget_items WHERE id=?', (int(old_id),)).fetchone()
+                if old_budget and old_budget[0]:
+                    c.execute('UPDATE budget_items SET budget_amount=budget_amount+? WHERE id=?',
+                              (old_budget[0], keep_id))
                 c.execute('DELETE FROM budget_items WHERE id=?', (int(old_id),))
         conn.commit()
 
@@ -502,7 +511,8 @@ def main():
     conn.commit()
 
     # 6. rollup — leaf → root (d=7 → d=1)
-    #    d=6(◎)는 자식 d=7(○)의 합
+    #    ◎이월액 노드는 rollup에서 제외 (본예산 금액과 이월액 분리)
+    #    d=6(◎)는 자식 d=7(○)의 합 (◎이월액 제외)
     #    d=5(편성목)는 자식 d=6(◎)의 합
     #    d=4(통계목)는 자식 d=5(편성목)의 합
     #    ... d=1(정책)은 자식 d=2(단위)의 합
@@ -513,7 +523,9 @@ def main():
                    SUM(finance_national) as fn, SUM(finance_province) as fp,
                    SUM(finance_county) as fc, SUM(finance_special) as fs,
                    SUM(finance_balance) as fb, SUM(finance_other) as fo
-            FROM budget_items WHERE depth = {d+1} GROUP BY parent_id''')
+            FROM budget_items WHERE depth = {d+1}
+              AND calc_name != '◎이월액'
+            GROUP BY parent_id''')
         c.execute(f'''UPDATE budget_items SET
             budget_amount = COALESCE((SELECT ba FROM tmp_rollup_{d} WHERE tmp_rollup_{d}.parent_id = budget_items.id), budget_amount),
             finance_national = COALESCE((SELECT fn FROM tmp_rollup_{d} WHERE tmp_rollup_{d}.parent_id = budget_items.id), 0),
@@ -522,7 +534,10 @@ def main():
             finance_special = COALESCE((SELECT fs FROM tmp_rollup_{d} WHERE tmp_rollup_{d}.parent_id = budget_items.id), 0),
             finance_balance = COALESCE((SELECT fb FROM tmp_rollup_{d} WHERE tmp_rollup_{d}.parent_id = budget_items.id), 0),
             finance_other = COALESCE((SELECT fo FROM tmp_rollup_{d} WHERE tmp_rollup_{d}.parent_id = budget_items.id), 0)
-            WHERE depth = {d} AND EXISTS (SELECT 1 FROM budget_items child WHERE child.parent_id = budget_items.id)''')
+            WHERE depth = {d} AND EXISTS (
+                SELECT 1 FROM budget_items child
+                WHERE child.parent_id = budget_items.id AND child.calc_name != '◎이월액'
+            )''')
         c.execute(f'DROP TABLE tmp_rollup_{d}')
         conn.commit()
 

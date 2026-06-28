@@ -481,6 +481,92 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
         return None
 
 
+def create_intermediate_nodes(c, parent_id, parent_depth, ex, eco, carryover_type):
+    """
+    매칭된 노드가 d=6보다 얕을 때 d=6까지 중간 노드를 생성하고 ◎이월액(d=7)을 INSERT.
+
+    parent_depth=3 → d=4(label), d=5(item), d=6(calc) 생성 후 ◎이월액
+    parent_depth=5 → d=6(calc) 생성 후 ◎이월액
+
+    Returns: ◎이월액 노드 id (성공) / None (실패)
+    """
+    try:
+        p_row = c.execute(
+            "SELECT depth, dept, policy, unit, detail FROM budget_items WHERE id = ?",
+            (parent_id,),
+        ).fetchone()
+        if not p_row:
+            return None
+        p_depth, ed, ep, eu, edet = p_row
+        label_code = ex.get("label_code", "").strip()
+        calc_name = ex.get("calc_name", "").strip()
+
+        cur_parent = parent_id
+
+        # d=4 (label) — parent가 d=3인 경우
+        if p_depth <= 3:
+            if label_code:
+                row = c.execute(
+                    "SELECT id FROM budget_items WHERE depth=4 AND dept=? AND detail=? AND label=? LIMIT 1",
+                    (ed, edet, label_code),
+                ).fetchone()
+                if row:
+                    lbl_id = row[0]
+                else:
+                    c.execute(
+                        "INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, budget_amount, is_total) VALUES (?, 4, ?, ?, ?, ?, ?, 0, 1)",
+                        (cur_parent, ed, ep, eu, edet, label_code),
+                    )
+                    lbl_id = c.lastrowid
+            else:
+                # label_code 없으면 더미 d=4 생성하지 않고 parent 그대로
+                lbl_id = cur_parent
+            cur_parent = lbl_id
+
+        # d=5 (item) — parent가 d=3 또는 d=4인 경우
+        if p_depth <= 4:
+            item_name = calc_name or (f"{label_code} (편성목)" if label_code else "")
+            if item_name:
+                row = c.execute(
+                    "SELECT id FROM budget_items WHERE depth=5 AND dept=? AND detail=? AND item_name=? LIMIT 1",
+                    (ed, edet, item_name),
+                ).fetchone()
+                if row:
+                    item_id = row[0]
+                else:
+                    c.execute(
+                        "INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 5, ?, ?, ?, ?, ?, ?, ?, '', 0, 1)",
+                        (cur_parent, ed, ep, eu, edet, label_code, label_code, item_name),
+                    )
+                    item_id = c.lastrowid
+            else:
+                item_id = cur_parent
+            cur_parent = item_id
+
+        # d=6 (calc) — 항상 생성 (parent가 d=5이거나 위에서 생성됨)
+        if calc_name:
+            row = c.execute(
+                "SELECT id FROM budget_items WHERE depth=6 AND dept=? AND detail=? AND calc_name=? LIMIT 1",
+                (ed, edet, calc_name),
+            ).fetchone()
+            if row:
+                calc_id = row[0]
+            else:
+                c.execute(
+                    "INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 6, ?, ?, ?, ?, '', '', '', ?, 0, 1)",
+                    (cur_parent, ed, ep, eu, edet, calc_name),
+                )
+                calc_id = c.lastrowid
+        else:
+            calc_id = cur_parent
+
+        # ◎이월액 (d=7) INSERT
+        return _insert_carryover_node(c, calc_id, ex, eco, carryover_type)
+    except Exception as e:
+        print(f"  ⚠️ 중간 노드 생성 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
+        return None
+
+
 def match_and_insert(db_path, items, carryover_type):
     """
     매칭 → ◎이월액 노드 INSERT
@@ -550,12 +636,25 @@ def match_and_insert(db_path, items, carryover_type):
             # 가장 깊은 노드 = ◎이월액 parent
             cands.sort(key=lambda r: -r[5])
             parent_id = cands[0][0]
-            try:
-                _insert_carryover_node(c, parent_id, ex, eco, carryover_type)
+            parent_depth = cands[0][5]
+
+            # depth 보정: 매칭된 노드가 d=6이 아니면 d=6까지 중간 노드 생성
+            if parent_depth < 6:
+                parent_id = create_intermediate_nodes(
+                    c, parent_id, parent_depth, ex, eco, carryover_type
+                )
+                if parent_id is None:
+                    unmatched.append(ex)
+                    continue
+                # create_intermediate_nodes가 ◎이월액까지 INSERT 했음
                 matched += 1
-            except Exception as e:
-                unmatched.append(ex)
-                print(f"  ⚠️ INSERT 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
+            else:
+                try:
+                    _insert_carryover_node(c, parent_id, ex, eco, carryover_type)
+                    matched += 1
+                except Exception as e:
+                    unmatched.append(ex)
+                    print(f"  ⚠️ INSERT 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
             continue
 
         # Pass 3: 매칭 실패 → 상위 트리부터 맞추며 신규 노드 생성 (B 케이스)
