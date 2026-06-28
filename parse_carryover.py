@@ -113,6 +113,30 @@ def norm(s):
     return str(s).strip().replace("\n", " ").replace("\r", "")
 
 
+def norm_compact(s):
+    """비교용 정규화 — 공백/기호 제거"""
+    if not s:
+        return ''
+    s = str(s).strip()
+    s = re.sub(r'[\s.·/\-ㆍ]', '', s)
+    return s.lower()
+
+
+def norm_stem(s):
+    """괄호/기호 무시 + 공백 제거 — A 케이스 매칭용"""
+    if not s:
+        return ''
+    s = str(s).strip()
+    s = re.sub(r'\([^)]*\)', '', s)  # 괄호 제거
+    s = re.sub(r'[\s.·/\-ㆍ]', '', s)  # 기호/공백 제거
+    return s.lower()
+
+
+def norm_stem_raw(s):
+    """DB raw 값에 대한 norm_stem"""
+    return norm_stem(s)
+
+
 def won_to_kwon(v):
     """원 → 천원"""
     return round(v / 1000)
@@ -234,10 +258,10 @@ def create_new_tree(c, ex, carryover_type, eco):
 
     Returns: ◎이월액 노드의 id (성공) / None (실패)
     """
-    ed = norm(ex["dept"])
-    ep = norm(ex["policy"])
-    eu = norm(ex["unit"])
-    edet = norm(ex["detail"])
+    ed = ex["dept"].strip() if ex["dept"] else ""
+    ep = ex["policy"].strip() if ex["policy"] else ""
+    eu = ex["unit"].strip() if ex["unit"] else ""
+    edet = ex["detail"].strip() if ex["detail"] else ""
     label_code = ex.get("label_code", "").strip()
     calc_name = ex.get("calc_name", "").strip()
 
@@ -245,7 +269,7 @@ def create_new_tree(c, ex, carryover_type, eco):
         return None
 
     try:
-        # dept (d=0)
+        # dept (d=0) — 정확 매칭
         row = c.execute("SELECT id FROM budget_items WHERE depth=0 AND dept=? LIMIT 1", (ed,)).fetchone()
         if row:
             dept_id = row[0]
@@ -253,34 +277,46 @@ def create_new_tree(c, ex, carryover_type, eco):
             c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (NULL, 0, ?, '', '', '', 0, 1)", (ed,))
             dept_id = c.lastrowid
 
-        # policy (d=1)
+        # policy (d=1) — norm_stem 매칭 (괄호 무시)
         if ep:
-            row = c.execute("SELECT id FROM budget_items WHERE depth=1 AND dept=? AND policy=? LIMIT 1", (ed, ep)).fetchone()
-            if row:
-                pol_id = row[0]
-            else:
+            ep_stem = norm_stem(ep)
+            row = c.execute("SELECT id, policy FROM budget_items WHERE depth=1 AND dept=?", (ed,)).fetchall()
+            pol_id = None
+            for r in row:
+                if norm_stem(r[1]) == ep_stem:
+                    pol_id = r[0]
+                    break
+            if pol_id is None:
                 c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (?, 1, ?, ?, '', '', 0, 1)", (dept_id, ed, ep))
                 pol_id = c.lastrowid
         else:
             pol_id = dept_id
 
-        # unit (d=2)
+        # unit (d=2) — norm_stem 매칭
         if eu:
-            row = c.execute("SELECT id FROM budget_items WHERE depth=2 AND dept=? AND policy=? AND unit=? LIMIT 1", (ed, ep, eu)).fetchone()
-            if row:
-                unit_id = row[0]
-            else:
+            eu_stem = norm_stem(eu)
+            row = c.execute("SELECT id, unit FROM budget_items WHERE depth=2 AND dept=? AND parent_id=?", (ed, pol_id)).fetchall()
+            unit_id = None
+            for r in row:
+                if norm_stem(r[1]) == eu_stem:
+                    unit_id = r[0]
+                    break
+            if unit_id is None:
                 c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (?, 2, ?, ?, ?, '', 0, 1)", (pol_id, ed, ep, eu))
                 unit_id = c.lastrowid
         else:
             unit_id = pol_id
 
-        # detail (d=3)
+        # detail (d=3) — norm_stem 매칭
         if edet:
-            row = c.execute("SELECT id FROM budget_items WHERE depth=3 AND dept=? AND unit=? AND detail=? LIMIT 1", (ed, eu, edet)).fetchone()
-            if row:
-                det_id = row[0]
-            else:
+            edet_stem = norm_stem(edet)
+            row = c.execute("SELECT id, detail FROM budget_items WHERE depth=3 AND dept=? AND parent_id=?", (ed, unit_id)).fetchall()
+            det_id = None
+            for r in row:
+                if norm_stem(r[1]) == edet_stem:
+                    det_id = r[0]
+                    break
+            if det_id is None:
                 c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, budget_amount, is_total) VALUES (?, 3, ?, ?, ?, ?, 0, 1)", (unit_id, ed, ep, eu, edet))
                 det_id = c.lastrowid
         else:
@@ -449,15 +485,15 @@ def match_and_insert(db_path, items, carryover_type):
     """
     매칭 → ◎이월액 노드 INSERT
 
-    Pass 1: dept+policy+unit+detail 정확 → ◎이월액 INSERT
-    Pass 2: dept+policy_prefix+unit+detail 정확 → ◎이월액 INSERT
-    Pass 3: 매칭 실패 → 본예산에 신규 트리 생성 (dept~◎이월액)
+    Pass 1: dept+policy+unit+detail 정확 매칭 → 가장 깊은 노드 밑에 ◎이월액
+    Pass 2: dept+policy+unit+detail — norm() 괄호/기호 무시 매칭 (A 케이스)
+    Pass 3: 매칭 실패 → 상위 트리부터 맞추며 신규 노드 생성 (B 케이스)
+            dept(d=0) → policy(d=1) → unit(d=2) → detail(d=3) → label(d=4) → item(d=5) → calc(d=6) → ◎이월액(d=7)
     """
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
 
-    # 매칭 후보: dept+policy+unit+detail 까지 정확 매칭 → d=3 (세부) 가장 깊은 것
-    # 그 밑에 ◎이월액 노드 INSERT
+    # 본예산 노드만 (id < 10000, ◎이월액 제외)
     db_rows = c.execute("""
         SELECT id, dept, policy, unit, detail, depth, parent_id
         FROM budget_items
@@ -466,24 +502,15 @@ def match_and_insert(db_path, items, carryover_type):
     """).fetchall()
     print(f"  DB 매칭 후보 (d=3~6): {len(db_rows):,}개")
 
-    # dept별로 index
-    dept_index = defaultdict(list)
-    for r in db_rows:
-        dept_index[norm(r[1])].append(r)
-
     matched = 0
     unmatched = []
-
-    # dept='' row 처리: 직전 items의 dept 기억 → 빈 dept 채우기 (todo 3 — 61건 해결)
-    # 이월조서 엑셀에서 col 0이 빈 row = 같은 부서의 연속 row.
     last_dept = ""
 
     for ex in items:
         ed = norm(ex["dept"])
-        # dept 빈 row → 직전 dept 사용
         if not ed and last_dept:
             ed = last_dept
-            ex["dept"] = last_dept  # 원본 dict 갱신 (create_new_tree/_under 등에서 사용)
+            ex["dept"] = last_dept
         if ed:
             last_dept = ed
 
@@ -496,100 +523,47 @@ def match_and_insert(db_path, items, carryover_type):
         if eco == 0:
             continue
 
-        # Pass 1: dept+policy+unit+detail 정확
+        # Pass 1: dept+policy+unit+detail 정확 매칭 (norm_compact)
         cands = [
             r for r in db_rows
-            if norm(r[1]) == ed and norm(r[2]) == ep
-            and norm(r[3]) == eu and norm(r[4]) == edet
+            if norm_compact(r[1]) == norm_compact(ex["dept"])
+            and norm_compact(r[2]) == norm_compact(ex["policy"])
+            and norm_compact(r[3]) == norm_compact(ex["unit"])
+            and norm_compact(r[4]) == norm_compact(ex["detail"])
         ]
-        if cands:
-            print(f"  [DBG1] ed={ed} ep={ep} eu={eu} edet={edet} → cands={[(r[0], r[1], r[2], r[3], r[4]) for r in cands]}")
-        # Pass 2
-        if not cands and len(ep) >= 3:
-            cands = [
-                r for r in db_rows
-                if norm(r[1]) == ed and (ep in norm(r[2]) or norm(r[2]).startswith(ep))
-                and norm(r[3]) == eu and norm(r[4]) == edet
-            ]
-            if cands:
-                print(f"  [DEBUG] Pass 2 매칭: → cands={[r[0] for r in cands]}")
 
-        # Pass 2.5: 이월조서 정책 괄호 suffix 무시 — stem(괄호 앞까지) 매칭
-        # unit/detail이 달라도 policy stem만 맞으면 매칭 (이월조서는 본예산과 편성 구조가 다를 수 있음)
-        if not cands and len(ep) >= 2:
-            ep_stem = ep.split("(")[0].strip()
-            cands = [
-                r for r in db_rows
-                if norm(r[1]) == ed
-                and norm(r[2]).split("(")[0].strip() == ep_stem
-            ]
-            if cands:
-                print(f"  [DEBUG] Pass 2.5 stem 매칭: stem={ep_stem} → cands={[r[0] for r in cands[:5]]}")
-
-        # Pass 3 제거 — detail substring 느슨 매칭 (Pass 5와 동일 이유)
-        # Pass 4 제거 — dept+unit만 매칭 (정책/세부 무시)도 "농촌 에너지" 같은
-        # 본예산에 없는 사업이 매칭되어 같은 부모에 잘못 들어감
-        # Pass 1~2 정확 매칭 안 되면 create_new_tree()로 신규 트리 생성
-
-        # Pass 5 제거 — detail substring 느슨해서 "농촌 에너지" 같은
-        # 본예산에 없는 사업이 같은 부모에 잘못 매칭됨
-
-        # Pass 6: dept+policy_stem 정확 (unit 노드 = d=2) — 괄호 무시
-        # 사용자 의도: 신규 트리는 "상위 트리 매칭된 부모" 밑에 생성
-        if not cands and ed:
-            ep_stem6 = ep.split("(")[0].strip() if ep else ""
-            cands = [
-                r for r in db_rows
-                if norm(r[1]) == ed
-                and norm(r[2]).split("(")[0].strip() == ep_stem6
-                and r[5] == 2
-            ]
-            if cands:
-                print(f"  [DEBUG] Pass 6 stem 매칭: stem={ep_stem6} → cands={[r[0] for r in cands]}")
-        # Pass 6 fallback: dept만 (d=2) — 다 모를 때
-        if not cands and ed:
-            cands = [r for r in db_rows if norm(r[1]) == ed and r[5] == 2]
-
+        # Pass 2: 괄호/기호 무시 norm_stem 매칭 (A 케이스)
         if not cands:
-            # 매칭 실패 (dept도 없음) → 본예산에 통째로 신규 트리 생성
-            parent_id = create_new_tree(c, ex, carryover_type, eco)
-            if parent_id:
+            ep_stem = norm_stem(ex["policy"])
+            eu_stem = norm_stem(ex["unit"])
+            edet_stem = norm_stem(ex["detail"])
+            ed_compact = norm_compact(ex["dept"])
+            cands = [
+                r for r in db_rows
+                if norm_compact(r[1]) == ed_compact
+                and norm_stem_raw(r[2]) == ep_stem
+                and norm_stem_raw(r[3]) == eu_stem
+                and norm_stem_raw(r[4]) == edet_stem
+            ]
+
+        if cands:
+            # 가장 깊은 노드 = ◎이월액 parent
+            cands.sort(key=lambda r: -r[5])
+            parent_id = cands[0][0]
+            try:
+                _insert_carryover_node(c, parent_id, ex, eco, carryover_type)
                 matched += 1
-                continue
-            else:
+            except Exception as e:
                 unmatched.append(ex)
-                continue
+                print(f"  ⚠️ INSERT 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
+            continue
 
-        # 가장 깊은 (depth 큰) 노드 = ◎이월액 노드 parent
-        cands.sort(key=lambda r: -r[5])  # depth 내림차순
-        parent_id = cands[0][0]
-        parent_depth = cands[0][5]
-
-        # Pass 6 매칭 (d=2 unit) 또는 dept+detail (d=3) 만 있을 때
-        # = "상위 트리 매칭, 사업은 신규" → 그 밑에 신규 트리 생성
-        # cands 가 [unit] 또는 [detail] 또는 둘 다일 때 (본예산 사업 일치 0~1개)
-        if parent_depth in (2, 3):
-            # 매칭된 부모 (unit/detail) 의 dept/policy/unit/detail 를 따르고
-            # 그 밑에 detail/label/item/calc/◎이월액 신규 생성
-            # cands에 본예산 사업 (d=3 또는 d=4~6) 있으면 자기 사업을 사용
-            # cands에 단위(d=2)만 있으면 = 본예산에 사업 없음 → 신규 트리
-            use_existing = any(r[5] >= 4 for r in cands)  # d=4~6 사업 있음
-            if not use_existing:
-                parent_id = create_new_tree_under(c, ex, carryover_type, eco, parent_id)
-                if parent_id:
-                    matched += 1
-                    continue
-                else:
-                    unmatched.append(ex)
-                    continue
-
-        # ◎이월액 노드 INSERT — 공통 헬퍼 사용 (27 컬럼 × 27 값 정합)
-        try:
-            _insert_carryover_node(c, parent_id, ex, eco, carryover_type)
+        # Pass 3: 매칭 실패 → 상위 트리부터 맞추며 신규 노드 생성 (B 케이스)
+        parent_id = create_new_tree(c, ex, carryover_type, eco)
+        if parent_id:
             matched += 1
-        except Exception as e:
+        else:
             unmatched.append(ex)
-            print(f"  ⚠️ INSERT 실패 ({ex['dept']} {ex['unit']} {ex['calc_name']}): {e}")
 
     conn.commit()
     conn.close()
@@ -676,8 +650,18 @@ def main():
     print("\n=== carryover > 0 depth 분포 ===")
     for d, cnt, amt in r:
         print(f"  d={d}: {cnt}개, {amt:,}천원")
-    conn.close()
+    # children_count 재계산 (parse_carryover가 노드를 추가했으므로)
+    c.execute("""UPDATE budget_items SET children_count = (
+        SELECT COUNT(*) FROM budget_items child WHERE child.parent_id = budget_items.id
+    )""")
+    conn.commit()
 
+    # summary_text NULL fix
+    c.execute("UPDATE budget_items SET summary_text='' WHERE summary_text IS NULL")
+    conn.commit()
+    c.execute("PRAGMA wal_checkpoint(FULL)")
+
+    conn.close()
 
 if __name__ == "__main__":
     main()

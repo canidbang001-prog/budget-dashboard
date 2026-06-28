@@ -545,7 +545,42 @@ def main():
                   (d['budget'], d['budget'], dept))
     conn.commit()
 
-    # 7. children_count 계산
+    # 7. 중복 노드 머지 — 부모와 모든 필드+budget 동일한 자식을 부모에 머지
+    total_merged = 0
+    while True:
+        dupes = c.execute('''
+            SELECT child.id, child.parent_id
+            FROM budget_items child
+            JOIN budget_items parent ON child.parent_id = parent.id
+            WHERE child.depth = parent.depth + 1
+            AND child.depth >= 2
+            AND child.budget_amount = parent.budget_amount
+            AND COALESCE(child.detail,'') = COALESCE(parent.detail,'')
+            AND COALESCE(child.label,'') = COALESCE(parent.label,'')
+            AND COALESCE(child.item_name,'') = COALESCE(parent.item_name,'')
+            AND COALESCE(child.calc_name,'') = COALESCE(parent.calc_name,'')
+            AND COALESCE(child.unit,'') = COALESCE(parent.unit,'')
+            AND COALESCE(child.policy,'') = COALESCE(parent.policy,'')
+        ''').fetchall()
+        if not dupes:
+            break
+        for child_id, parent_id in dupes:
+            c.execute('UPDATE budget_items SET parent_id=? WHERE parent_id=?', (parent_id, child_id))
+            c.execute('DELETE FROM budget_items WHERE id=?', (child_id,))
+        total_merged += len(dupes)
+        conn.commit()
+    print(f"   중복 노드 머지: {total_merged}개")
+
+    # 7.5. 남은 고아 노드 연쇄 삭제
+    while True:
+        c.execute('''DELETE FROM budget_items WHERE parent_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM budget_items p WHERE p.id = budget_items.parent_id)''')
+        n = c.rowcount
+        conn.commit()
+        if n == 0:
+            break
+
+    # 8. children_count 계산
     c.execute('''UPDATE budget_items SET children_count = (
         SELECT COUNT(*) FROM budget_items child WHERE child.parent_id = budget_items.id
     )''')
