@@ -580,13 +580,14 @@ def match_and_insert(db_path, items, carryover_type):
     c = conn.cursor()
 
     # 본예산 노드만 (id < 10000, ◎이월액 제외)
+    # 이월조서는 통계목까지만 나오므로 d=6(산출부기명)은 매칭에서 제외
     db_rows = c.execute("""
         SELECT id, dept, policy, unit, detail, depth, parent_id
         FROM budget_items
-        WHERE depth IN (3, 4, 5, 6) AND (calc_name IS NULL OR calc_name != '◎이월액')
+        WHERE depth IN (3, 4, 5) AND (calc_name IS NULL OR calc_name != '◎이월액')
         AND id < 10000
     """).fetchall()
-    print(f"  DB 매칭 후보 (d=3~6): {len(db_rows):,}개")
+    print(f"  DB 매칭 후보 (d=3~5, 이월조서는 통계목까지만): {len(db_rows):,}개")
 
     matched = 0
     unmatched = []
