@@ -94,6 +94,48 @@ def _insert_carryover_node(c, parent_id, ex, eco, carryover_type):
     return c.lastrowid
 
 
+# d=6 직접 INSERT용 SQL (depth=6, calc_name='◎이월액')
+_CARRYOVER_INSERT_D6_SQL = """
+    INSERT INTO budget_items
+    (parent_id, depth, dept, policy, unit, detail, label, item_code,
+     item_name, calc_name, basis, budget_amount, budget_amount_raw,
+     page, row_num, is_total, status,
+     carryover, carryover_national, carryover_province, carryover_county,
+     carryover_special, carryover_balance, carryover_other,
+     carryover_continued, carryover_explicit, carryover_accident)
+    VALUES (?, 6, ?, ?, ?, ?, '', '',
+            ?, '◎이월액', ?, ?, ?,
+            ?, 0, 1, ?,
+            ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?)
+"""
+
+
+def _insert_carryover_node_as_d6(c, parent_id, ex, eco, carryover_type):
+    """◎이월액을 d=6으로 직접 INSERT (기존 d=6 형제가 없는 경우).
+
+    불필요한 d=6(통계목) -> d=7(◎이월액) 2단계를
+    d=6(◎이월액) 1단계로 축소.
+    """
+    c.execute(_CARRYOVER_INSERT_D6_SQL, (
+        parent_id,
+        ex["dept"], ex["policy"], ex["unit"], ex["detail"],
+        ex["calc_name"],
+        ex.get("carryover_reason", ""),
+        eco,
+        eco,
+        ex.get("page", ""),
+        carryover_type,
+        eco,
+        ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
+        ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
+        eco if carryover_type == "계속비" else 0,
+        eco if carryover_type == "명시이월" else 0,
+        eco if carryover_type == "사고이월" else 0,
+    ))
+    return c.lastrowid
+
+
 def ensure_carryover_columns(c):
     """carryover_continued/explicit/accident 컬럼 없으면 ALTER TABLE 추가.
 
@@ -543,25 +585,37 @@ def create_intermediate_nodes(c, parent_id, parent_depth, ex, eco, carryover_typ
                 item_id = cur_parent
             cur_parent = item_id
 
-        # d=6 (calc) — 항상 생성 (parent가 d=5이거나 위에서 생성됨)
+        # d=6 (calc) — 기존 d=6 자식 유무에 따라 분기
+        # 기존 d=6(본예산 산출부기명) 자식이 있으면 → 새 d=6(이월용 통계목) + d=7(◎이월액) 2단계
+        # 기존 d=6 자식이 없으면 → ◎이월액을 d=6으로 직접 INSERT (불필요한 중간 노드 제거)
         if calc_name:
-            row = c.execute(
-                "SELECT id FROM budget_items WHERE depth=6 AND dept=? AND detail=? AND calc_name=? LIMIT 1",
-                (ed, edet, calc_name),
-            ).fetchone()
-            if row:
-                calc_id = row[0]
-            else:
-                c.execute(
-                    "INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 6, ?, ?, ?, ?, '', '', '', ?, 0, 1)",
-                    (cur_parent, ed, ep, eu, edet, calc_name),
-                )
-                calc_id = c.lastrowid
-        else:
-            calc_id = cur_parent
+            existing_d6 = c.execute(
+                "SELECT COUNT(*) FROM budget_items WHERE parent_id=? AND depth=6 AND id < 10000",
+                (cur_parent,),
+            ).fetchone()[0]
 
-        # ◎이월액 (d=7) INSERT
-        return _insert_carryover_node(c, calc_id, ex, eco, carryover_type)
+            if existing_d6 > 0:
+                # 기존 d=6 형제가 있음 → 새 d=6(이월용) + d=7(◎이월액) 생성
+                row = c.execute(
+                    "SELECT id FROM budget_items WHERE depth=6 AND dept=? AND detail=? AND calc_name=? LIMIT 1",
+                    (ed, edet, calc_name),
+                ).fetchone()
+                if row:
+                    calc_id = row[0]
+                else:
+                    c.execute(
+                        "INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 6, ?, ?, ?, ?, '', '', '', ?, 0, 1)",
+                        (cur_parent, ed, ep, eu, edet, calc_name),
+                    )
+                    calc_id = c.lastrowid
+                # ◎이월액 (d=7) INSERT
+                return _insert_carryover_node(c, calc_id, ex, eco, carryover_type)
+            else:
+                # 기존 d=6 형제 없음 → ◎이월액을 d=6으로 직접 INSERT
+                return _insert_carryover_node_as_d6(c, cur_parent, ex, eco, carryover_type)
+        else:
+            # calc_name 없으면 기존대로 d=7 INSERT
+            return _insert_carryover_node(c, cur_parent, ex, eco, carryover_type)
     except Exception as e:
         print(f"  ⚠️ 중간 노드 생성 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
         return None
