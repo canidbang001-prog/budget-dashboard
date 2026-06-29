@@ -457,11 +457,21 @@ def api_item(item_id: int):
         db.close()
 
 
-# ── 정적 파일 (Next.js 대시보드) ─────────────────────────────────
+# ── 정적 파일 (Next.js 대시보드) ────────────────────────────────
+
+class NoCacheStaticFiles(StaticFiles):
+    """index.html에 no-cache 헤더를 추가해 새 빌드 바로 반영."""
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith('.html') or path == '' or path.endswith('/'):
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+        return response
 
 static_dir = os.path.join(os.path.dirname(__file__), 'frontend', 'out')
 if os.path.isdir(static_dir):
-    app.mount('/', StaticFiles(directory=static_dir, html=True), name='frontend')
+    app.mount('/', NoCacheStaticFiles(directory=static_dir, html=True), name='frontend')
 
 if __name__ == '__main__':
     import uvicorn

@@ -323,6 +323,16 @@ def main():
         return nid
 
     # 990개 시트 파싱
+    # 트리 누적 값 — 시트/페이지 경계에서 상위 depth 값이 비어있으면 이어서 사용
+    # 같은 dept/policy/unit 그룹이면 초기화 하지 않고 직전 값 유지
+    cur_detail = ''
+    cur_label = ''
+    cur_item_code = ''
+    cur_item_name = ''
+    cur_calc_name = ''
+    name_id = ''  # d=7 산출내역 고유 식별용
+    prev_dept = prev_policy = prev_unit = ''
+
     for sheet_num in range(1, 991):
         result = parse_sheet(z, shared, sheet_num)
         if not result:
@@ -332,13 +342,15 @@ def main():
         unit = result['unit']
         page = sheet_num
 
-        # 트리 노드 추적 — 각 depth의 현재 값
-        cur_detail = ''
-        cur_label = ''
-        cur_item_code = ''
-        cur_item_name = ''
-        cur_calc_name = ''
-        name_id = ''  # d=7 산출내역 고유 식별용
+        # 새로운 dept/policy/unit 그룹이 면 상위 depth 값 초기화
+        if (dept, policy, unit) != (prev_dept, prev_policy, prev_unit):
+            cur_detail = ''
+            cur_label = ''
+            cur_item_code = ''
+            cur_item_name = ''
+            cur_calc_name = ''
+            name_id = ''
+            prev_dept, prev_policy, prev_unit = dept, policy, unit
 
         last_node_id = None
 
