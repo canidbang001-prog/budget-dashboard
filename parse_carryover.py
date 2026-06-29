@@ -136,6 +136,47 @@ def _insert_carryover_node_as_d6(c, parent_id, ex, eco, carryover_type):
     return c.lastrowid
 
 
+# d=5 직접 INSERT용 SQL (depth=5, calc_name='◎이월액')
+_CARRYOVER_INSERT_D5_SQL = """
+    INSERT INTO budget_items
+    (parent_id, depth, dept, policy, unit, detail, label, item_code,
+     item_name, calc_name, basis, budget_amount, budget_amount_raw,
+     page, row_num, is_total, status,
+     carryover, carryover_national, carryover_province, carryover_county,
+     carryover_special, carryover_balance, carryover_other,
+     carryover_continued, carryover_explicit, carryover_accident)
+    VALUES (?, 5, ?, ?, ?, ?, '', '',
+            ?, '◎이월액', ?, ?, ?,
+            ?, 0, 1, ?,
+            ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?)
+"""
+
+
+def _insert_carryover_node_as_d5(c, parent_id, ex, eco, carryover_type):
+    """◎이월액을 d=5로 직접 INSERT (이월조서는 통계목까지만 나오므로).
+
+    d=4(label)의 직접 자식으로 붙음.
+    """
+    c.execute(_CARRYOVER_INSERT_D5_SQL, (
+        parent_id,
+        ex["dept"], ex["policy"], ex["unit"], ex["detail"],
+        ex["calc_name"],
+        ex.get("carryover_reason", ""),
+        eco,
+        eco,
+        ex.get("page", ""),
+        carryover_type,
+        eco,
+        ex["carryover_national"], ex["carryover_province"], ex["carryover_county"],
+        ex["carryover_special"], ex["carryover_balance"], ex["carryover_other"],
+        eco if carryover_type == "계속비" else 0,
+        eco if carryover_type == "명시이월" else 0,
+        eco if carryover_type == "사고이월" else 0,
+    ))
+    return c.lastrowid
+
+
 def ensure_carryover_columns(c):
     """carryover_continued/explicit/accident 컬럼 없으면 ALTER TABLE 추가.
 
@@ -364,7 +405,7 @@ def create_new_tree(c, ex, carryover_type, eco):
         else:
             det_id = unit_id
 
-        # label (d=4) + item (d=5) — col 5 통계목의 label_code 추출
+        # label (d=4) — 통계목 label_code
         if label_code:
             row = c.execute("SELECT id FROM budget_items WHERE depth=4 AND dept=? AND detail=? AND label=? LIMIT 1", (ed, edet, label_code)).fetchone()
             if row:
@@ -372,34 +413,11 @@ def create_new_tree(c, ex, carryover_type, eco):
             else:
                 c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 4, ?, ?, ?, ?, ?, '', '', '', 0, 1)", (det_id, ed, ep, eu, edet, label_code))
                 lbl_id = c.lastrowid
-
-            # item_name = 본예산 패턴과 일치: 편성목명(calc_name) 사용.
-            item_name = calc_name or f"{label_code} (편성목)"
-            row = c.execute("SELECT id FROM budget_items WHERE depth=5 AND dept=? AND detail=? AND item_code=? LIMIT 1", (ed, edet, label_code)).fetchone()
-            if row:
-                item_id = row[0]
-            else:
-                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 5, ?, ?, ?, ?, ?, ?, ?, '', 0, 1)", (lbl_id, ed, ep, eu, edet, label_code, label_code, item_name))
-                item_id = c.lastrowid
         else:
-            item_id = det_id
+            lbl_id = det_id
 
-        # calc (d=6) — 통계목
-        if calc_name:
-            row = c.execute("SELECT id FROM budget_items WHERE depth=6 AND dept=? AND detail=? AND calc_name=? LIMIT 1", (ed, edet, calc_name)).fetchone()
-            print(f"  [DBG] calc SELECT: dept={ed} detail={edet} calc_name={calc_name} → {row}")
-            if row:
-                calc_id = row[0]
-            else:
-                c.execute("INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 6, ?, ?, ?, ?, '', '', '', ?, 0, 1)", (item_id, ed, ep, eu, edet, calc_name))
-                calc_id = c.lastrowid
-                print(f"  [DBG] calc INSERT → calc_id={calc_id}")
-        else:
-            calc_id = item_id
-
-        # ◎이월액 (d=6) INSERT — d=5(item)의 직접 자식으로
-        # d=6(calc) 중간 노드를 만들지 않고 d=5에 바로 붙임
-        return _insert_carryover_node_as_d6(c, item_id, ex, eco, carryover_type)
+        # ◎이월액 (d=5) INSERT — d=4(label)의 직접 자식으로
+        return _insert_carryover_node_as_d5(c, lbl_id, ex, eco, carryover_type)
     except Exception as e:
         print(f"  ⚠️ 신규 트리 생성 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
         return None
@@ -459,7 +477,7 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
         else:
             return None
 
-        # label (d=4) + item (d=5) + calc (d=6) 신규 생성
+        # label (d=4) 신규 생성
         if label_code:
             row = c.execute("""
                 SELECT id FROM budget_items
@@ -476,49 +494,11 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
                     VALUES (?, 4, ?, ?, ?, ?, ?, '', '', '', 0, 1)
                 """, (det_id, ed, ep, eu, edet, label_code))
                 lbl_id = c.lastrowid
-
-            # item_name = 본예산 패턴과 일치: 편성목명(calc_name) 사용.
-            # 예: "01 연구용역비". 기존 f"{label_code} (편성목)" 은 본예산 item_name 과 불일치.
-            item_name = calc_name or f"{label_code} (편성목)"
-            row = c.execute("""
-                SELECT id FROM budget_items
-                WHERE depth=5 AND dept=? AND detail=? AND item_code=?
-                LIMIT 1
-            """, (ed, edet, label_code)).fetchone()
-            if row:
-                item_id = row[0]
-            else:
-                c.execute("""
-                    INSERT INTO budget_items
-                    (parent_id, depth, dept, policy, unit, detail, label, item_code,
-                     item_name, calc_name, budget_amount, is_total)
-                    VALUES (?, 5, ?, ?, ?, ?, ?, ?, ?, '', 0, 1)
-                """, (lbl_id, ed, ep, eu, edet, label_code, label_code, item_name))
-                item_id = c.lastrowid
         else:
-            item_id = det_id
+            lbl_id = det_id
 
-        if calc_name:
-            row = c.execute("""
-                SELECT id FROM budget_items
-                WHERE depth=6 AND dept=? AND detail=? AND calc_name=?
-                LIMIT 1
-            """, (ed, edet, calc_name)).fetchone()
-            if row:
-                calc_id = row[0]
-            else:
-                c.execute("""
-                    INSERT INTO budget_items
-                    (parent_id, depth, dept, policy, unit, detail, label, item_code,
-                     item_name, calc_name, budget_amount, is_total)
-                    VALUES (?, 6, ?, ?, ?, ?, '', '', '', ?, 0, 1)
-                """, (item_id, ed, ep, eu, edet, calc_name))
-                calc_id = c.lastrowid
-        else:
-            calc_id = item_id
-
-        # ◎이월액 (d=6) INSERT — d=5(item)의 직접 자식으로
-        return _insert_carryover_node_as_d6(c, item_id, ex, eco, carryover_type)
+        # ◎이월액 (d=5) INSERT — d=4(label)의 직접 자식으로
+        return _insert_carryover_node_as_d5(c, lbl_id, ex, eco, carryover_type)
     except Exception as e:
         print(f"  ⚠️ create_new_tree_under 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
         return None
@@ -526,10 +506,11 @@ def create_new_tree_under(c, ex, carryover_type, eco, parent_id):
 
 def create_intermediate_nodes(c, parent_id, parent_depth, ex, eco, carryover_type):
     """
-    매칭된 노드가 d=6보다 얕을 때 d=6까지 중간 노드를 생성하고 ◎이월액(d=7)을 INSERT.
+    매칭된 노드가 d=4보다 얕을 때 d=4(label)까지 중간 노드를 생성하고
+    ◎이월액(d=5)을 INSERT.
 
-    parent_depth=3 → d=4(label), d=5(item), d=6(calc) 생성 후 ◎이월액
-    parent_depth=5 → d=6(calc) 생성 후 ◎이월액
+    parent_depth=3 → d=4(label) 생성 후 ◎이월액(d=5)
+    parent_depth=4 → ◎이월액(d=5) 직접 INSERT
 
     Returns: ◎이월액 노드 id (성공) / None (실패)
     """
@@ -562,38 +543,15 @@ def create_intermediate_nodes(c, parent_id, parent_depth, ex, eco, carryover_typ
                     )
                     lbl_id = c.lastrowid
             else:
-                # label_code 없으면 더미 d=4 생성하지 않고 parent 그대로
                 lbl_id = cur_parent
             cur_parent = lbl_id
 
-        # d=5 (item) — parent가 d=3 또는 d=4인 경우
-        if p_depth <= 4:
-            item_name = calc_name or (f"{label_code} (편성목)" if label_code else "")
-            if item_name:
-                row = c.execute(
-                    "SELECT id FROM budget_items WHERE depth=5 AND dept=? AND detail=? AND item_name=? LIMIT 1",
-                    (ed, edet, item_name),
-                ).fetchone()
-                if row:
-                    item_id = row[0]
-                else:
-                    c.execute(
-                        "INSERT INTO budget_items (parent_id, depth, dept, policy, unit, detail, label, item_code, item_name, calc_name, budget_amount, is_total) VALUES (?, 5, ?, ?, ?, ?, ?, ?, ?, '', 0, 1)",
-                        (cur_parent, ed, ep, eu, edet, label_code, label_code, item_name),
-                    )
-                    item_id = c.lastrowid
-            else:
-                item_id = cur_parent
-            cur_parent = item_id
-
-        # ◎이월액을 항상 d=5(item)의 직접 자식(d=6)으로 INSERT
-        # 이월조서는 통계목까지만 나오므로 d=6(산출부기명)을 거칠 필요 없음
-        # 기존 d=6(◎산출부기명)과 같은 d=6 레벨의 형제로 ◎이월액이 붙음
+        # ◎이월액을 d=4(label)의 직접 자식(d=5)으로 INSERT
+        # 이월조서는 통계목까지만 나오므로 d=5(편성목) 이하는 만들지 않음
         if calc_name:
-            return _insert_carryover_node_as_d6(c, cur_parent, ex, eco, carryover_type)
+            return _insert_carryover_node_as_d5(c, cur_parent, ex, eco, carryover_type)
         else:
-            # calc_name 없으면 기존대로 d=7 INSERT
-            return _insert_carryover_node(c, cur_parent, ex, eco, carryover_type)
+            return _insert_carryover_node_as_d5(c, cur_parent, ex, eco, carryover_type)
     except Exception as e:
         print(f"  ⚠️ 중간 노드 생성 실패 ({ex['dept']} {ex['unit']} {ex['detail']}): {e}")
         return None
@@ -612,14 +570,14 @@ def match_and_insert(db_path, items, carryover_type):
     c = conn.cursor()
 
     # 본예산 노드만 (id < 10000, ◎이월액 제외)
-    # 이월조서는 통계목까지만 나오므로 d=6(산출부기명)은 매칭에서 제외
+    # 이월조서는 통계목(d=4 label)까지만 나오므로 d=5~6은 매칭에서 제외
     db_rows = c.execute("""
         SELECT id, dept, policy, unit, detail, depth, parent_id
         FROM budget_items
-        WHERE depth IN (3, 4, 5) AND (calc_name IS NULL OR calc_name != '◎이월액')
+        WHERE depth IN (3, 4) AND (calc_name IS NULL OR calc_name != '◎이월액')
         AND id < 10000
     """).fetchall()
-    print(f"  DB 매칭 후보 (d=3~5, 이월조서는 통계목까지만): {len(db_rows):,}개")
+    print(f"  DB 매칭 후보 (d=3~4, 이월조서는 통계목까지만): {len(db_rows):,}개")
 
     matched = 0
     unmatched = []
@@ -671,8 +629,8 @@ def match_and_insert(db_path, items, carryover_type):
             parent_id = cands[0][0]
             parent_depth = cands[0][5]
 
-            # depth 보정: 매칭된 노드가 d=6이 아니면 d=6까지 중간 노드 생성
-            if parent_depth < 6:
+            # depth 보정: 매칭된 노드가 d=4보다 얕으면 d=4까지 중간 노드 생성
+            if parent_depth < 4:
                 parent_id = create_intermediate_nodes(
                     c, parent_id, parent_depth, ex, eco, carryover_type
                 )
@@ -683,7 +641,7 @@ def match_and_insert(db_path, items, carryover_type):
                 matched += 1
             else:
                 try:
-                    _insert_carryover_node_as_d6(c, parent_id, ex, eco, carryover_type)
+                    _insert_carryover_node_as_d5(c, parent_id, ex, eco, carryover_type)
                     matched += 1
                 except Exception as e:
                     unmatched.append(ex)

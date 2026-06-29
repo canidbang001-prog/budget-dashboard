@@ -147,10 +147,10 @@ form.addEventListener('submit', async (e) => {
 
 
 def _patch_tree_marks(tree_items):
-    """d=6에 ◎, d=7에 ○ 접두사 붙이기 (◎이월액 제외)"""
+    """d=5/d=6에 ◎, d=7에 ○ 접두사 붙이기 (◎이월액 제외)"""
     for ti in tree_items:
         if ti.calc_name and ti.calc_name != '◎이월액':
-            if ti.depth == 6 and not ti.calc_name.startswith('◎'):
+            if ti.depth in (5, 6) and not ti.calc_name.startswith('◎'):
                 ti.calc_name = '◎' + ti.calc_name
             elif ti.depth == 7 and not ti.calc_name.startswith('○'):
                 ti.calc_name = '○' + ti.calc_name

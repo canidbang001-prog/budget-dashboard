@@ -105,8 +105,8 @@ export function getNodeLabel(node: TreeNodeData | SearchResultData): string {
   if (n.depth === 2) return n.unit || '';
   if (n.depth === 3) return n.detail || n.unit || '';
   if (n.depth === 4) return n.label || n.detail || '';
-  // d=5: item_name 우선, 없으면 label
-  if (n.depth === 5) return n.item_name || n.label || '';
+  // d=5: calc_name(◎이월액) 우선, 없으면 item_name
+  if (n.depth === 5) return n.calc_name || n.item_name || n.label || '';
   // d=6/d=7: calc_name (◎/○ 마크는 API에서 _patch_tree_marks가 붙임)
   if (n.calc_name) return n.calc_name;
   if (n.item_name) return n.item_name;
