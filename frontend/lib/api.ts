@@ -113,6 +113,8 @@ interface RawTreeNode {
   finance_other: number;
   is_total: number;
   page?: number;
+  children_count?: number;
+  has_children?: boolean;
   children: RawTreeNode[];
 }
 
@@ -182,7 +184,7 @@ function mapTreeNode(raw: RawTreeNode): TreeNodeData {
     finance_other: raw.finance_other ?? 0,
     is_total: raw.is_total ?? 0,
     page: raw.page ?? 0,
-    has_children: true,  // Lazy loading으로 판단 (API에 children_count 미포함)
+    has_children: (raw.children_count ? raw.children_count > 0 : (raw.children && raw.children.length > 0)),
     children: (raw.children || []).map(mapTreeNode),
   };
 }

@@ -80,8 +80,8 @@ def _insert_carryover_node(c, parent_id, ex, eco, carryover_type):
         ex["dept"], ex["policy"], ex["unit"], ex["detail"],
         ex["calc_name"],                              # item_name
         ex.get("carryover_reason", ""),               # basis
-        eco,                                          # budget_amount = 이월액 (트리에 금액 표시, d=0 subtree 보정에서 d=7 제외로 중복 방지)
-        eco,                                          # budget_amount_raw
+        0,                                            # budget_amount = 0 (◎이월액은 이월예산만, 당해예산 아님)
+        0,                                            # budget_amount_raw
         ex.get("page", ""),                           # page
         carryover_type,                               # status
         eco,                                          # carryover (= ex["carryover"])
@@ -122,8 +122,8 @@ def _insert_carryover_node_as_d6(c, parent_id, ex, eco, carryover_type):
         ex["dept"], ex["policy"], ex["unit"], ex["detail"],
         ex["calc_name"],
         ex.get("carryover_reason", ""),
-        eco,
-        eco,
+        0,                                            # budget_amount = 0 (◎이월액은 이월예산만)
+        0,                                            # budget_amount_raw
         ex.get("page", ""),
         carryover_type,
         eco,
@@ -163,8 +163,8 @@ def _insert_carryover_node_as_d5(c, parent_id, ex, eco, carryover_type):
         ex["dept"], ex["policy"], ex["unit"], ex["detail"],
         ex["calc_name"],
         ex.get("carryover_reason", ""),
-        eco,
-        eco,
+        0,                                            # budget_amount = 0 (◎이월액은 이월예산만)
+        0,                                            # budget_amount_raw
         ex.get("page", ""),
         carryover_type,
         eco,

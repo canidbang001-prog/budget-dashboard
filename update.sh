@@ -46,7 +46,7 @@ echo "▶ 1단계: xlsx → csv"
 # 3) csv → db
 echo ""
 echo "▶ 2단계: csv → db"
-.venv/bin/python parser_v8.py "$DB"
+.venv/bin/python parser_v14.py "$DB"
 
 # 4) 재원 rollup 보정 (parser 버그 보정)
 echo ""

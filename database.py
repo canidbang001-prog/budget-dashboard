@@ -43,6 +43,7 @@ class BudgetItem(Base):
     carryover_explicit = Column(Integer, default=0)
     carryover_accident = Column(Integer, default=0)
     summary_text = Column(Text, default='')
+    children_count = Column(Integer, default=0)
 
 
 _engines: dict[str, any] = {}

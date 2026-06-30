@@ -169,12 +169,14 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
         <div className="rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 p-5 text-white shadow-md">
           <p className="text-xs font-medium text-blue-100 uppercase tracking-wide">총예산</p>
           <p className="mt-1.5 text-2xl font-bold tracking-tight">
-            {node.carryover > 0
-              ? formatBudget(node.budget_amount + node.carryover)
-              : (node.budget_amount > 0 ? formatBudget(node.budget_amount) : '-')
+            {node.calc_name === '◎이월액'
+              ? (node.carryover > 0 ? formatBudget(node.carryover) : '-')
+              : node.carryover > 0
+                ? formatBudget(node.budget_amount + node.carryover)
+                : (node.budget_amount > 0 ? formatBudget(node.budget_amount) : '-')
             }
           </p>
-          {node.carryover > 0 && (
+          {node.carryover > 0 && node.calc_name !== '◎이월액' && (
             <p className="mt-1 text-[10px] text-blue-100">
               당해 {formatBudget(node.budget_amount)} + 이월 {formatBudget(node.carryover)}
             </p>

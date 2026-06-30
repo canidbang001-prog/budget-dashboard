@@ -72,6 +72,8 @@ class TreeItem(BaseModel):
     carryover_explicit: int = 0
     carryover_accident: int = 0
     page: str = ''
+    children_count: int = 0
+    has_children: bool = False
     children: list['TreeItem'] = []
 
     model_config = {'from_attributes': True}

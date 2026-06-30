@@ -291,19 +291,20 @@ def api_summary():
 
 
 def _patch_dept_carryover(db, tree_items: list[TreeItem]):
-    """For every node, aggregate carryover from its entire subtree.
+    """For non-carryover nodes, aggregate carryover from descendant ◎이월액 nodes.
 
-    carryover 단일 컬럼은 의미 모호 (raw 또는 중복) → 6컬럼(천원) 합으로 통일.
-    carryover_continued/explicit/accident 도 동일하게.
+    ◎이월액 노드 자신은 이미 DB에 정확한 단일 carryover 값을 가지고 있으므로
+    subtree 집계로 덮어쓰지 않는다. (자기 자신을 집계하면 carryover_* 가
+    carryover 와 중복 합산되어 2배로 뻥튀기된다.)
     """
     cache = {}
     for ti in tree_items:
+        if ti.calc_name == '◎이월액':
+            # DB 값 그대로 유지; API 응답 시에만 총예산은 BudgetDetailPanel에서 carryover 만 표시
+            continue
         if ti.id in cache:
             co = cache[ti.id]
         else:
-            # RECURSIVE CTE: all descendants of ti.id
-            # carryover 합계 = ◎이월액 노드들의 carryover_explicit/continued/accident 만 사용
-            # (사업 d=3 의 6col carryover_county 는 명시이월 row 1건과 매칭되지만, 같은 값이 ◎이월액 d=6 에도 박혀있어 이중 카운트 회피)
             from sqlalchemy import text
             sql = text('''
                 WITH RECURSIVE subtree(id) AS (
@@ -320,10 +321,7 @@ def _patch_dept_carryover(db, tree_items: list[TreeItem]):
                             + COALESCE(b.carryover_special, 0)
                             + COALESCE(b.carryover_balance, 0)
                             + COALESCE(b.carryover_other, 0)
-                            + COALESCE(b.carryover_explicit, 0)
-                            + COALESCE(b.carryover_continued, 0)
-                            + COALESCE(b.carryover_accident, 0)
-                          ELSE 0 END
+                        ELSE 0 END
                     ), 0) AS total_carryover,
                     COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_national ELSE 0 END), 0),
                     COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_province ELSE 0 END), 0),
@@ -355,7 +353,7 @@ def _patch_dept_carryover(db, tree_items: list[TreeItem]):
 @app.get('/api/tree', response_model=TreeResponse)
 def api_tree(
     dept: str = Query(None), parent_id: int = Query(None),
-    depth: int = Query(None), limit: int = Query(200),
+    depth: int = Query(None), limit: int = Query(5000),
 ):
     db = get_db(DB_PATH)
     try:
@@ -363,10 +361,17 @@ def api_tree(
         if dept: q = q.filter(BudgetItem.dept == dept)
         if parent_id is not None: q = q.filter(BudgetItem.parent_id == parent_id)
         if depth is not None: q = q.filter(BudgetItem.depth == depth)
-        if parent_id is None and depth is None: q = q.filter(BudgetItem.depth == 0)
+        # dept 지정 시에는 해당 부서의 전체 트리를 한 번에 반환 (lazy loading 대신)
+        if dept and parent_id is None and depth is None:
+            pass  # depth 제한 없이 모두 반환
+        elif parent_id is None and depth is None:
+            q = q.filter(BudgetItem.depth == 0)
         q = q.order_by(BudgetItem.id).limit(limit)
         items = q.all()
         tree_items = [TreeItem.model_validate(i) for i in items]
+        # SQLAlchemy에 has_children 없으므로 children_count에서 동제화
+        for ti in tree_items:
+            ti.has_children = ti.children_count > 0
         tree_items = _patch_tree_marks(tree_items)
         # Patch depth-0 carryover from department-wide aggregation
         _patch_dept_carryover(db, tree_items)
@@ -386,6 +391,8 @@ def api_tree_children(item_id: int, limit: int = Query(200)):
             BudgetItem.parent_id == item_id
         ).order_by(BudgetItem.id).limit(limit).all()
         tree_items = [TreeItem.model_validate(c) for c in children]
+        for ti in tree_items:
+            ti.has_children = ti.children_count > 0
         tree_items = _patch_tree_marks(tree_items)
         # Patch depth-0 carryover from department-wide aggregation
         _patch_dept_carryover(db, tree_items)
