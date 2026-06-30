@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # NAS에서 GitHub 최신 코드를 받아 Docker 컨테이너를 재시작합니다.
 # NAS의 Synology DSM Tasks 또는 crontab에서 1분마다 실행하도록 등록하세요.
 
