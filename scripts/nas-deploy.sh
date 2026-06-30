@@ -6,7 +6,7 @@ set -e
 
 # 실제 프로젝트 경로로 수정하세요.
 # 예: /volume1/docker/hermes-agent/data/projects/홍성예산/budget-dashboard
-PROJECT_DIR="/volume1/docker/hermes-agent/data/projects/\ud569\ubcf8\uc608\uc0b0\uc11c-\ub300\uc2dc\ubcf4\ub4dc"
+PROJECT_DIR=/volume1/docker/hermes-agent/data/projects/budget-dashboard
 CONTAINER_NAME="budget-dashboard"
 
 if [ ! -d "$PROJECT_DIR/.git" ]; then
