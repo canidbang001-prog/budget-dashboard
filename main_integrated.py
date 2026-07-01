@@ -15,7 +15,7 @@ from models import (
     BudgetItemOut, TreeItem, SummaryOut, SummaryDept,
     StatsOut, SearchResult, TreeResponse, HealthOut,
 )
-from auth import create_session_token, verify_session_token, DASHBOARD_PASSWORD, COOKIE_NAME, SESSION_MAX_AGE
+from auth import create_session_token, verify_session_token, DASHBOARD_PASSWORD, COOKIE_NAME, SESSION_MAX_AGE, COOKIE_SECURE, COOKIE_SAMESITE
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'budget.db')
 
@@ -178,6 +178,15 @@ async def api_auth_login(request: Request):
         )
     token = create_session_token()
     resp = JSONResponse({'status': 'ok'})
+    resp.set_cookie(
+        key=COOKIE_NAME,
+        value=token,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path='/',
+    )
     return resp
 
 
@@ -472,12 +481,3 @@ if __name__ == '__main__':
     import uvicorn
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 3003
     uvicorn.run(app, host='0.0.0.0', port=port)
-    resp.set_cookie(
-        key=COOKIE_NAME,
-        value=token,
-        max_age=SESSION_MAX_AGE,
-        httponly=True,
-        secure=auth.COOKIE_SECURE,
-        samesite=auth.COOKIE_SAMESITE,
-        path='/',
-    )
