@@ -7,6 +7,7 @@ import type { TreeNodeData } from '@/types';
 import { fetchTree } from '@/lib/api';
 import TreeNode from '@/components/TreeNode';
 import TreeControls from '@/components/TreeControls';
+import BudgetDetailPanel from '@/components/BudgetDetailPanel';
 
 /** 평면 노드 리스트 → 부모-자식 트리 구조로 변환 */
 function buildTree(flatNodes: TreeNodeData[]): TreeNodeData[] {
@@ -36,16 +37,23 @@ export default function DepartmentPageClient({ name }: { name: string }) {
 
   const [flatNodes, setFlatNodes] = useState<TreeNodeData[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandKey, setExpandKey] = useState(0);
   const [bulkExpand, setBulkExpand] = useState<boolean>(false);
+  const [selectedNode, setSelectedNode] = useState<TreeNodeData | null>(null);
 
   const rootNodes = useMemo(() => buildTree(flatNodes), [flatNodes]);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchTree(deptName)
       .then((data) => {
         setFlatNodes(data);
+      })
+      .catch((err) => {
+        console.error('[DepartmentPageClient] fetchTree 실패:', err);
+        setError(`트리 로드 실패: ${err instanceof Error ? err.message : String(err)}`);
       })
       .finally(() => setLoading(false));
   }, [deptName]);
@@ -97,6 +105,8 @@ export default function DepartmentPageClient({ name }: { name: string }) {
                 </div>
               ))}
             </div>
+          ) : error ? (
+            <div className="p-8 text-center text-sm text-red-400">{error}</div>
           ) : flatNodes.length === 0 ? (
             <div className="p-8 text-center text-sm text-slate-400">
               데이터가 없습니다
@@ -104,12 +114,17 @@ export default function DepartmentPageClient({ name }: { name: string }) {
           ) : (
             <div key={expandKey}>
               {rootNodes.map((node) => (
-                <TreeNode key={node.id} node={node} depth={0} autoExpand={bulkExpand} />
+                <TreeNode key={node.id} node={node} depth={0} autoExpand={bulkExpand} onSelect={setSelectedNode} />
               ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* ── 우측: 상세 패널 ── */}
+      {selectedNode && (
+        <BudgetDetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+      )}
     </main>
   );
 }

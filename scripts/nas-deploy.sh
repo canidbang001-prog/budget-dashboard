@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # NAS auto-deploy: pull latest code from GitHub and rebuild the container
 set -euo pipefail
 
