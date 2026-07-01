@@ -2,7 +2,7 @@
 # NAS auto-deploy: pull latest code from GitHub and rebuild the container
 set -euo pipefail
 
-PROJECT_DIR=/volume1/docker/hermes-agent/data/projects/budget-dashboard
+PROJECT_DIR=/volume1/docker/hermes-agent/data/projects/합본예산서-대시보드
 CONTAINER_NAME="budget-dashboard"
 
 if [ ! -d "$PROJECT_DIR/.git" ]; then
