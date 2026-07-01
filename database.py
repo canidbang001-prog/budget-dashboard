@@ -39,6 +39,19 @@ class BudgetItem(Base):
     carryover_special = Column(Integer, default=0)
     carryover_balance = Column(Integer, default=0)
     carryover_other = Column(Integer, default=0)
+    carryover_continued = Column(Integer, default=0)
+    carryover_explicit = Column(Integer, default=0)
+    carryover_accident = Column(Integer, default=0)
+    summary_text = Column(Text, default='')
+    # parser_v14 auxiliary columns
+    item_code = Column(Text, default='')
+    basis = Column(Text, default='')
+    budget_amount_raw = Column(Text, default='')
+    row_num = Column(Integer, default=0)
+    is_total = Column(Integer, default=0)
+    prev_amount = Column(Integer, default=0)
+    diff_amount = Column(Integer, default=0)
+    children_count = Column(Integer, default=0)
 
 
 _engines: dict[str, any] = {}
@@ -58,16 +71,3 @@ def get_db(db_path: str = 'budget.db') -> Session:
     if abs_path not in _SessionLocal:
         init_db(db_path)
     return _SessionLocal[abs_path]()
-    carryover_continued = Column(Integer, default=0)
-    carryover_explicit = Column(Integer, default=0)
-    carryover_accident = Column(Integer, default=0)
-    summary_text = Column(Text, default='')
-    # parser_v14 auxiliary columns
-    item_code = Column(Text, default='')
-    basis = Column(Text, default='')
-    budget_amount_raw = Column(Text, default='')
-    row_num = Column(Integer, default=0)
-    is_total = Column(Integer, default=0)
-    prev_amount = Column(Integer, default=0)
-    diff_amount = Column(Integer, default=0)
-    children_count = Column(Integer, default=0)
