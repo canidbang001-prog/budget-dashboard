@@ -86,15 +86,31 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
     .filter(Boolean)
     .join(' > ');
 
-  const financeItems = FINANCE_ENTRIES
+  const classifiedFinanceItems = FINANCE_ENTRIES
     .map((e) => ({ ...e, amount: node[e.key] }))
     .filter((e) => e.amount > 0);
-  const financeTotal = financeItems.reduce((sum, e) => sum + e.amount, 0);
+  const financeTotal = classifiedFinanceItems.reduce((sum, e) => sum + e.amount, 0);
+  const unclassifiedAmount = Math.max(0, node.budget_amount - financeTotal);
+  const financeItems = [
+    ...classifiedFinanceItems,
+    ...(unclassifiedAmount > 0
+      ? [{ key: 'unclassified', label: '미분류', barColor: 'bg-slate-300', textColor: 'text-slate-500', amount: unclassifiedAmount }]
+      : []),
+  ];
+  const financeGrandTotal = financeTotal + unclassifiedAmount;
 
-  const carryoverFinanceItems = CARRYOVER_FINANCE_ENTRIES
+  const classifiedCarryoverItems = CARRYOVER_FINANCE_ENTRIES
     .map((e) => ({ ...e, amount: node[e.key] }))
     .filter((e) => e.amount > 0);
-  const carryoverFinanceTotal = carryoverFinanceItems.reduce((sum, e) => sum + e.amount, 0);
+  const carryoverFinanceTotal = classifiedCarryoverItems.reduce((sum, e) => sum + e.amount, 0);
+  const carryoverUnclassifiedAmount = Math.max(0, node.carryover - carryoverFinanceTotal);
+  const carryoverFinanceItems = [
+    ...classifiedCarryoverItems,
+    ...(carryoverUnclassifiedAmount > 0
+      ? [{ key: 'carryover_unclassified', label: '미분류', barColor: 'bg-slate-400', textColor: 'text-slate-600', amount: carryoverUnclassifiedAmount }]
+      : []),
+  ];
+  const carryoverFinanceGrandTotal = carryoverFinanceTotal + carryoverUnclassifiedAmount;
 
   // ── 모바일 드래그 투 클로즈 ──
   const sheetRef = useRef<HTMLDivElement>(null);
@@ -191,14 +207,14 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
           <div className="rounded-xl bg-slate-50 border border-slate-100 p-4">
             <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">당해예산</p>
             <p className="mt-1 text-base font-bold text-slate-800">
-              {node.budget_amount > 0 ? formatBudget(node.budget_amount) : '-'}
+              {node.calc_name === '◎이월액' ? '-' : node.budget_amount > 0 ? formatBudget(node.budget_amount) : '-'}
             </p>
             <p className="mt-0.5 text-[10px] text-slate-400">당해</p>
           </div>
           <div className="rounded-xl bg-amber-50/60 border border-amber-100 p-4">
             <p className="text-[11px] font-medium text-amber-500 uppercase tracking-wide">이월예산</p>
             <p className="mt-1 text-base font-bold text-amber-800">
-              {node.carryover > 0 ? formatBudget(node.carryover) : '-'}
+              {node.calc_name === '◎이월액' ? formatBudget(node.carryover) : node.carryover > 0 ? formatBudget(node.carryover) : '-'}
             </p>
             <p className="mt-0.5 text-[10px] text-amber-400">차기 이월</p>
           </div>
@@ -253,7 +269,7 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
             {/* Stacked bar */}
             <div className="flex h-3 rounded-full overflow-hidden mb-3 bg-slate-100">
               {financeItems.map((e) => {
-                const pct = financeTotal > 0 ? (e.amount / financeTotal) * 100 : 0;
+                const pct = financeGrandTotal > 0 ? (e.amount / financeGrandTotal) * 100 : 0;
                 return pct > 1 ? (
                   <div
                     key={e.key}
@@ -268,7 +284,7 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
             {/* Legend */}
             <div className="space-y-1.5">
               {financeItems.map((e) => {
-                const pct = financeTotal > 0 ? ((e.amount / financeTotal) * 100).toFixed(1) : '0';
+                const pct = financeGrandTotal > 0 ? ((e.amount / financeGrandTotal) * 100).toFixed(1) : '0';
                 return (
                   <div key={e.key} className="flex items-center gap-2 text-xs">
                     <span className={`w-2.5 h-2.5 rounded-sm shrink-0 ${e.barColor}`} />
@@ -283,7 +299,7 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
             {/* 총합 */}
             <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
               <span>재원 총합</span>
-              <span className="font-mono font-medium text-slate-500">{formatBudget(financeTotal)}</span>
+              <span className="font-mono font-medium text-slate-500">{formatBudget(financeGrandTotal)}</span>
             </div>
           </section>
         )}
@@ -298,7 +314,7 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
             {/* Stacked bar */}
             <div className="flex h-3 rounded-full overflow-hidden mb-3 bg-amber-50">
               {carryoverFinanceItems.map((e) => {
-                const pct = carryoverFinanceTotal > 0 ? (e.amount / carryoverFinanceTotal) * 100 : 0;
+                const pct = carryoverFinanceGrandTotal > 0 ? (e.amount / carryoverFinanceGrandTotal) * 100 : 0;
                 return pct > 1 ? (
                   <div
                     key={e.key}
@@ -313,7 +329,7 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
             {/* Legend */}
             <div className="space-y-1.5">
               {carryoverFinanceItems.map((e) => {
-                const pct = carryoverFinanceTotal > 0 ? ((e.amount / carryoverFinanceTotal) * 100).toFixed(1) : '0';
+                const pct = carryoverFinanceGrandTotal > 0 ? ((e.amount / carryoverFinanceGrandTotal) * 100).toFixed(1) : '0';
                 return (
                   <div key={e.key} className="flex items-center gap-2 text-xs">
                     <span className={`w-2.5 h-2.5 rounded-sm shrink-0 ${e.barColor}`} />
@@ -328,7 +344,7 @@ export default function BudgetDetailPanel({ node, onClose }: Props) {
             {/* 총합 */}
             <div className="mt-3 pt-3 border-t border-amber-100 flex items-center justify-between text-xs text-slate-400">
               <span>이월액 총합</span>
-              <span className="font-mono font-medium text-slate-500">{formatBudget(carryoverFinanceTotal)}</span>
+              <span className="font-mono font-medium text-slate-500">{formatBudget(carryoverFinanceGrandTotal)}</span>
             </div>
           </section>
         )}

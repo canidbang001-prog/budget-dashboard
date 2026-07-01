@@ -77,54 +77,56 @@ export default function DepartmentPageClient({ name }: { name: string }) {
         <span className="font-medium text-slate-700">{deptName}</span>
       </nav>
 
-      {/* Tree */}
-      <div className="bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden flex flex-col" style={{ minHeight: 'calc(100vh - 180px)' }}>
-        <div className="px-4 py-3 border-b border-slate-100">
-          <h1 className="text-base font-bold text-slate-800 flex items-center gap-2">
-            <span className="text-blue-500">📁</span>
-            {deptName}
-          </h1>
-        </div>
+      <div className="lg:flex lg:gap-6">
+        {/* Tree */}
+        <div className="bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden flex flex-col lg:flex-1" style={{ minHeight: 'calc(100vh - 180px)' }}>
+          <div className="px-4 py-3 border-b border-slate-100">
+            <h1 className="text-base font-bold text-slate-800 flex items-center gap-2">
+              <span className="text-blue-500">📁</span>
+              {deptName}
+            </h1>
+          </div>
 
-        {!loading && flatNodes.length > 0 && (
-          <TreeControls
-            onExpandAll={handleExpandAll}
-            onCollapseAll={handleCollapseAll}
-            nodeCount={flatNodes.length}
-          />
-        )}
-
-        <div className="overflow-y-auto flex-1">
-          {loading ? (
-            <div className="p-6 space-y-3">
-              {[1, 2, 3, 4, 5, 6].map((i) => (
-                <div key={i} className="animate-pulse flex items-center gap-3">
-                  <div className="w-4 h-4 bg-slate-200 rounded" />
-                  <div className="flex-1 h-4 bg-slate-200 rounded" style={{ width: `${50 + i * 8}%` }} />
-                  <div className="w-16 h-4 bg-slate-100 rounded" />
-                </div>
-              ))}
-            </div>
-          ) : error ? (
-            <div className="p-8 text-center text-sm text-red-400">{error}</div>
-          ) : flatNodes.length === 0 ? (
-            <div className="p-8 text-center text-sm text-slate-400">
-              데이터가 없습니다
-            </div>
-          ) : (
-            <div key={expandKey}>
-              {rootNodes.map((node) => (
-                <TreeNode key={node.id} node={node} depth={0} autoExpand={bulkExpand} onSelect={setSelectedNode} />
-              ))}
-            </div>
+          {!loading && flatNodes.length > 0 && (
+            <TreeControls
+              onExpandAll={handleExpandAll}
+              onCollapseAll={handleCollapseAll}
+              nodeCount={flatNodes.length}
+            />
           )}
-        </div>
-      </div>
 
-      {/* ── 우측: 상세 패널 ── */}
-      {selectedNode && (
-        <BudgetDetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
-      )}
+          <div className="overflow-y-auto flex-1">
+            {loading ? (
+              <div className="p-6 space-y-3">
+                {[1, 2, 3, 4, 5, 6].map((i) => (
+                  <div key={i} className="animate-pulse flex items-center gap-3">
+                    <div className="w-4 h-4 bg-slate-200 rounded" />
+                    <div className="flex-1 h-4 bg-slate-200 rounded" style={{ width: `${50 + i * 8}%` }} />
+                    <div className="w-16 h-4 bg-slate-100 rounded" />
+                  </div>
+                ))}
+              </div>
+            ) : error ? (
+              <div className="p-8 text-center text-sm text-red-400">{error}</div>
+            ) : flatNodes.length === 0 ? (
+              <div className="p-8 text-center text-sm text-slate-400">
+                데이터가 없습니다
+              </div>
+            ) : (
+              <div key={expandKey}>
+                {rootNodes.map((node) => (
+                  <TreeNode key={node.id} node={node} depth={0} autoExpand={bulkExpand} onSelect={setSelectedNode} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── 우측: 상세 패널 ── */}
+        {selectedNode && !error && (
+          <BudgetDetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
+        )}
+      </div>
     </main>
   );
 }
