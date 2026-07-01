@@ -306,12 +306,9 @@ def _patch_dept_carryover(db, tree_items: list[TreeItem]):
                 SELECT
                     COALESCE(SUM(
                         CASE WHEN b.calc_name='◎이월액' THEN
-                            COALESCE(b.carryover_national, 0)
-                            + COALESCE(b.carryover_province, 0)
-                            + COALESCE(b.carryover_county, 0)
-                            + COALESCE(b.carryover_special, 0)
-                            + COALESCE(b.carryover_balance, 0)
-                            + COALESCE(b.carryover_other, 0)
+                            COALESCE(b.carryover_explicit, 0)
+                            + COALESCE(b.carryover_continued, 0)
+                            + COALESCE(b.carryover_accident, 0)
                         ELSE 0 END
                     ), 0) AS total_carryover,
                     COALESCE(SUM(CASE WHEN b.calc_name='◎이월액' THEN b.carryover_national ELSE 0 END), 0),

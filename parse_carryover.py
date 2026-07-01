@@ -32,7 +32,7 @@ parse_carryover.py — 이월 조서 → DB에 ◎이월액 가상 노드 INSERT
 - 6: 예산계상액 | 7: 전년도이월액 | 9: 계 | 10: 지출금액 | 11: 금후지출소요액
 - 12: 잔액
 - 13: 다음연도 이월액 (carryover 본값)
-- 14~18: 국비/균특/기금/특교세/도비 (재원 5종 — 군비 없음)
+- 14~19: 국비/균특/기금/특교세/도비/군비 (재원 6종)
 - 사유 컬럼 없음
 
 사용법: python parse_carryover.py <이월조서.xls> [이월조서2.xls ...]
@@ -282,14 +282,14 @@ def parse_xls(path, carryover_type):
 
             # 컬럼 매핑 — 명시/사고이월 vs 계속비 양식 상이
             if carryover_type == "계속비":
-                # 계속비: 이월액 col 13, 재원 col 14~18 (국/균/기/특/도, 군비 없음), 사유 없음
+                # 계속비: 이월액 col 13, 재원 col 14~19 (국/균/기/특/도/군 6종), 사유 없음
                 carry_col = 13
                 nat = won_to_kwon(safe_int(ws.cell_value(r, 14)))
                 bal = won_to_kwon(safe_int(ws.cell_value(r, 15)))   # 균특
                 fund = won_to_kwon(safe_int(ws.cell_value(r, 16)))  # 기금
                 spec = won_to_kwon(safe_int(ws.cell_value(r, 17))) # 특교세
                 prov = won_to_kwon(safe_int(ws.cell_value(r, 18)))  # 도비
-                cnty = 0  # 군비 없음
+                cnty = won_to_kwon(safe_int(ws.cell_value(r, 19)))  # 군비
                 reason_col = None
             else:
                 # 명시/사고: 이월액 col 10, 재원 col 11~16 (국/균/기/특/도/군), 사유 col 17
